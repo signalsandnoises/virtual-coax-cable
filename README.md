@@ -306,6 +306,23 @@ service, fixed jitter buffer, AudioTrack fast track, 384-frame track buffer), pr
 - **Next:** screen-off acceptance on tb6; try tb4 and a lower jitter target (net delay p99 is about
   20-30 ms) to win back latency; investigate the 30 s Wi-Fi episodes.
 
+### Screen-off acceptance and milestone 3 tuning (2026-10-25, 05:00, PC hotspot, phone locked)
+
+| Run folder | Setting | Latency | Clean runs | Notes |
+|---|---|---|---|---|
+| `20261025-045750-x5`-ish (5 x 30 s) | t40, tb6, screen off | -11.1 ms | 4/5 | run 1 had a scan meltdown (564 ms stalls); 0 underruns |
+| `20261025-050125` (10 min soak) | t40, tb6, screen off | -11.1 ms | 2 dropouts (92 + 7 ms) | 0 underruns, 61 late |
+| 5 x 30 s | t30, tb6, screen off | -17.9 ms | 2/5 | delay spikes of 34-100 ms beat the 30 ms buffer |
+| `20261025-051533-x5` | t40, tb4, screen off | -15.5 ms | 3/5 | tb4 still underruns (2 in run 1); run 3 had a scan meltdown |
+
+- **Cause of the ~30 s Wi-Fi meltdowns: the phone's own Wi-Fi scans.** Logcat shows Samsung location
+  (`SLocation GeopointGeofenceManger - refresh wifi to receive loc`) starting full 2.4 + 5 GHz scans every
+  ~6-8 s in bursts, plus a PNO scheduled scan when the screen locks. During streaming, **12/12 scan
+  results coincided with a stall second.** Fixing it needs a phone setting change (Location off while in
+  use, or Location → Wi-Fi scanning off, or finding which app holds the geofence). Waiting on Rishabh.
+- **Best setting so far: target 40, track_bursts 6.** That is about -11 to -14 ms vs the wired path, clean
+  except for scan meltdowns. tb4 underruns; t30 is too tight while scans happen.
+
 **Paused 2026-10-25.** Options: (1) PC hotspot direct link, (2) check the Samsung Wi-Fi settings above,
 (3) accept roughly 150 ms+ latency, with our app or WFAS. To resume: the phone is on Verma, wireless
 debugging is likely off, and the PC's Wi-Fi is on Verma while its Ethernet stays on Verma2.
