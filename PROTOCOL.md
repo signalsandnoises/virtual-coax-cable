@@ -44,7 +44,7 @@ Body: u16 audio port (47800), then UTF-8 device name (e.g. `SM-S911U1`).
 
 ## STATS (type 4), phone:47800 → PC source address of the last AUDIO packet, about once a second
 
-Body, 40 bytes:
+Body, 56 bytes:
 
 | Offset | Type | Field |
 |---|---|---|
@@ -58,11 +58,18 @@ Body, 40 bytes:
 | 28 | u32 | output underruns (AudioTrack starved / buffer ran empty during playout) |
 | 32 | f32 | resampling ratio offset, ppm (0 when no drift control) |
 | 36 | u32 | AudioTrack buffer size, frames |
+| 40 | f32 | delay_p99_ms: p99 of (d − d_min) over the last second, ms (see below) |
+| 44 | f32 | delay_max_ms: max of (d − d_min) over the last second, ms |
+| 48 | f32 | gap_max_ms: max inter-arrival gap of AUDIO packets over the last second, ms |
+| 52 | f32 | depth_min_ms: minimum queued depth over the last second, ms |
+
+Delay: for each AUDIO arrival, d = arrival_time_µs − seq_unwrapped × frames / 48000 s, and d_min is
+the minimum d over a sliding ~10 s window.
 
 The phone also logs the same numbers once a second to logcat, tag `VCX`, as one line:
 
 ```
-VCX-STATS buf_ms=41.2 target_ms=40 rx=400 lost=0 recovered=0 concealed=0 late=0 underruns=0 rate_ppm=0.0 track_frames=192
+VCX-STATS buf_ms=41.2 target_ms=40 rx=400 lost=0 recovered=0 concealed=0 late=0 underruns=0 rate_ppm=0.0 track_frames=192 delay_p99_ms=3.1 delay_max_ms=7.9 gap_max_ms=9.0 depth_min_ms=35.0
 ```
 
 Counters in the log line and STATS are cumulative since the stream started.
