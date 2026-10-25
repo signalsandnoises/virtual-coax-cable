@@ -251,6 +251,30 @@ service, fixed jitter buffer, AudioTrack fast track, 384-frame track buffer), pr
 | `20261024-234603` | M1, target 30 (restarted service) | +25.4 ms | 5 (141 ms) | 0 |
 | `20261024-234643` | M1, target 20 (restarted service) | +15.8 ms (buffer sat at 57-80 ms) | 5 (172 ms) | 0 |
 
+### Milestone 2: Wi-Fi stalls on Verma2 (2026-10-25)
+
+- Phone-side arrival gaps of 40-190 ms (once 600 ms) happened in 35-70% of seconds, while idle-streaming
+  silence with the screen on. The PC sender's max gap was 3 ms, and PC→router pings were 0-2 ms.
+- The Wi-Fi lock mode made no difference: low_latency, high_perf and none were all bad. Background scan time
+  was about 0, Bluetooth is off, and having the app in the foreground didn't help.
+- Phone→router ping (0.2 s interval, 150 pings): median 4.5 ms, 23 above 20 ms, max 74 ms. The link is
+  11ax at 5220 MHz, RSSI -53, 720/864 Mbps.
+- **Idea to try (from Rishabh):** a PC hotspot. Windows Mobile Hotspot on the PC's Realtek 8922AE Wi-Fi 7
+  card, with the phone joined to it, gives a direct PC→phone link that skips the router. The phone still
+  gets internet through the PC.
+- Retest on Verma2 (`20261025-001246`, M2, target 40): +26.7 ms, 2 dropouts. Phone net delay max 160 ms.
+  Steering sat at +1000 ppm with depth 52-108 ms, a receiver bug (depth creeps up after stalls). A fix
+  was in progress when we paused.
+- **Verma** (Google Nest at 192.168.86.x, double-NATed behind Verma2): the PC can only reach the phone over
+  its own Wi-Fi, so there are 2 Wi-Fi hops. Stalls of 130-240 ms happened in 45 of 85 one-second samples,
+  in a periodic pattern (about 3 s of stalls every ~11 s). Worse than Verma2.
+- Stalls of ~130 ms happen on both networks, so the phone is the main suspect. Not yet checked: Samsung's
+  "Wi-Fi power saving mode" (Intelligent Wi-Fi) and "Nearby device scanning".
+
+**Paused 2026-10-25.** Options: (1) PC hotspot direct link, (2) check the Samsung Wi-Fi settings above,
+(3) accept roughly 150 ms+ latency, with our app or WFAS. To resume: the phone is on Verma, wireless
+debugging is likely off, and the PC's Wi-Fi is on Verma while its Ethernet stays on Verma2.
+
 ## If you are resuming this work after a context reset
 
 1. Read this README, then the project notes file (path above).

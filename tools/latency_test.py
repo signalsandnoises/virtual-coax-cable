@@ -485,6 +485,10 @@ def phone_log(serial, package, since):
         out["underrun_lines"] = out["underruns"]
         out["rate_ppm"] = [float(s["rate_ppm"]) for s in vcx]
         out["track_frames"] = sorted({int(s["track_frames"]) for s in vcx})
+        for key in ("delay_p99_ms", "delay_max_ms", "gap_max_ms", "depth_min_ms"):
+            vals = [float(s[key]) for s in vcx if key in s]
+            if vals:
+                out[key] = min(vals) if key == "depth_min_ms" else max(vals)
         return out
     playout = re.findall(r"\[PLAYOUT\] buffered=(\d+)ms target=(\d+)ms", text)
     out["target_ms"] = sorted({int(t) for _, t in playout})
@@ -506,6 +510,11 @@ def print_phone(p):
         print(f"  phone log: target {'/'.join(f'{t:g}' for t in p['target_ms'])} ms, buffer {min(b):.1f}-{max(b):.1f} ms, "
               f"rx {p['rx']}, lost {p['lost']}, recovered {p['recovered']}, concealed {p['concealed']}, "
               f"late {p['late']}, underruns {p['underruns']}, track {'/'.join(map(str, p['track_frames']))} frames")
+        if "delay_max_ms" in p:
+            ppm = p["rate_ppm"]
+            print(f"  phone net: delay p99 {p['delay_p99_ms']:.1f} ms, max {p['delay_max_ms']:.1f} ms, "
+                  f"gap max {p['gap_max_ms']:.1f} ms, depth min {p['depth_min_ms']:.1f} ms, "
+                  f"rate {min(ppm):+.0f}..{max(ppm):+.0f} ppm")
     else:
         b = p["buffered_ms"]
         print(f"  phone log: playout target {'/'.join(map(str, p['target_ms']))} ms, buffered {min(b)}-{max(b)} ms, "
