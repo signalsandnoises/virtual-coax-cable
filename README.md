@@ -310,9 +310,9 @@ service, fixed jitter buffer, AudioTrack fast track, 384-frame track buffer), pr
 
 | Run folder | Setting | Latency | Clean runs | Notes |
 |---|---|---|---|---|
-| `20261025-045750-x5`-ish (5 x 30 s) | t40, tb6, screen off | -11.1 ms | 4/5 | run 1 had a scan meltdown (564 ms stalls); 0 underruns |
+| `20261025-045748-x5` | t40, tb6, screen off | -11.1 ms | 4/5 | run 1 had a scan meltdown (564 ms stalls); 0 underruns |
 | `20261025-050125` (10 min soak) | t40, tb6, screen off | -11.1 ms | 2 dropouts (92 + 7 ms) | 0 underruns, 61 late |
-| 5 x 30 s | t30, tb6, screen off | -17.9 ms | 2/5 | delay spikes of 34-100 ms beat the 30 ms buffer |
+| `20261025-051158-x5` | t30, tb6, screen off | -17.9 ms | 2/5 | delay spikes of 34-100 ms beat the 30 ms buffer |
 | `20261025-051533-x5` | t40, tb4, screen off | -15.5 ms | 3/5 | tb4 still underruns (2 in run 1); run 3 had a scan meltdown |
 
 - **Cause of the ~30 s Wi-Fi meltdowns: the phone's own Wi-Fi scans.** Logcat shows Samsung location
