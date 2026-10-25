@@ -19,6 +19,7 @@ samples) is flagged, including gaps shorter than the click spacing. Missing clic
 a second, coarser check. Exit code: 0 clean, 3 issues found, 2 measurement failed.
 
     python tools/latency_test.py                 # play + record 30 s, analyze, save
+    python tools/latency_test.py --repeat 5 --adb 10.0.0.202:43635   # 5 runs + summary, with phone log
     python tools/latency_test.py --analyze X.wav # re-analyze a saved recording
     python tools/latency_test.py --selftest      # verify the analysis on synthetic defects
 
@@ -27,7 +28,12 @@ Output is played through the Focusrite outputs; --level is the click peak in dBF
 import argparse
 import datetime
 import json
+import os
+import re
+import shutil
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -428,6 +434,109 @@ def find_devices(hint, in_idx, out_idx):
     return i, o
 
 
+def play_and_record(played, i, o, a):
+    import sounddevice as sd
+    print(f"playing {a.duration:.0f} s of clicks at {a.level:.0f} dBFS peak (+{PRE_S:.0f}s pre, +{POST_S:.0f}s post)...")
+    try:
+        rec = sd.playrec(np.stack([played, played], axis=1), samplerate=SR, channels=2, device=(i, o), dtype="float32")
+        sd.wait()
+    except sd.PortAudioError as e:
+        sys.exit(f"audio error: {e}\nSet the Focusrite to {SR} Hz in its control panel / Windows sound settings.")
+    return rec
+
+
+def adb_run(serial, command, timeout=60):
+    exe = shutil.which("adb") or str(Path(os.environ.get("LOCALAPPDATA", "")) / "Android/Sdk/platform-tools/adb.exe")
+    return subprocess.run([exe, "-s", serial, "shell", command], capture_output=True, text=True, timeout=timeout).stdout
+
+
+def phone_clock(serial):
+    """The phone's wall clock in logcat -T format, taken before a run so its log can be cut there."""
+    try:
+        stamp = adb_run(serial, "date '+%m-%d %H:%M:%S.000'", timeout=15).strip()
+        if re.fullmatch(r"\d\d-\d\d \d\d:\d\d:\d\d\.000", stamp):
+            return stamp
+    except (OSError, subprocess.SubprocessError):
+        pass
+    print(f"WARNING: cannot read the phone clock over adb ({serial}); phone log skipped")
+    return None
+
+
+def phone_log(serial, package, since):
+    """What the app logged since `since`: playout target, buffer level, underruns, network loss."""
+    out = {"serial": serial, "since": since}
+    try:
+        pids = adb_run(serial, f"pidof {package}", timeout=15).split()
+        if not pids:
+            out["error"] = f"{package} is not running on the phone"
+            return out
+        text = adb_run(serial, f"logcat -d -v time --pid={pids[0]} -T '{since}'")
+    except (OSError, subprocess.SubprocessError) as e:
+        out["error"] = str(e)
+        return out
+    playout = re.findall(r"\[PLAYOUT\] buffered=(\d+)ms target=(\d+)ms", text)
+    out["target_ms"] = sorted({int(t) for _, t in playout})
+    out["buffered_ms"] = [int(b) for b, _ in playout]
+    out["underrun_lines"] = len(re.findall(r"disabled due to previous underrun", text))
+    metrics = re.findall(r"WFAS-METRICS.*?loss=([\d.]+)%.*?jitter=([\d.]+)ms peak=([\d.]+)ms", text)
+    if metrics:
+        out["net_loss_pct"], out["net_jitter_ms"], out["net_peak_ms"] = (float(x) for x in metrics[-1])
+    return out
+
+
+def print_phone(p):
+    if "error" in p:
+        print(f"  phone log: {p['error']}")
+    elif not p["target_ms"]:
+        print("  phone log: no [PLAYOUT] lines during the run (stream not flowing, or a different build)")
+    else:
+        b = p["buffered_ms"]
+        print(f"  phone log: playout target {'/'.join(map(str, p['target_ms']))} ms, buffered {min(b)}-{max(b)} ms, "
+              f"{p['underrun_lines']} underrun line(s), network loss {p.get('net_loss_pct', float('nan')):.2f}% "
+              f"jitter {p.get('net_jitter_ms', float('nan')):.1f} ms")
+
+
+def summarize(results, root):
+    rows = []
+    print("\n=== Summary of %d runs ===" % len(results))
+    print(" run  latency ms median (p95)   dropouts (ms)   slips after start-up   start-up skips   phone target   underruns")
+    for k, r in enumerate(results, 1):
+        if "fatal" in r:
+            print(f"{k:4d}  FAILED: {r['fatal']}")
+            rows.append({"run": k, "fatal": r["fatal"]})
+            continue
+        sh = r["lag_shifts"]
+        row = {"run": k, "latency_median_ms": r["latency_ms"]["median"], "latency_p95_ms": r["latency_ms"]["p95"],
+               "dropouts": len(r["dropouts"]), "dropout_ms": r["dropout_total_ms"],
+               "slips_after_startup": sum(1 for s in sh if not s["startup"] and not s["silence"]),
+               "startup_skips": sum(1 for s in sh if s["startup"]),
+               "target_ms": r.get("phone", {}).get("target_ms"),
+               "underrun_lines": r.get("phone", {}).get("underrun_lines")}
+        rows.append(row)
+        tgt = "/".join(map(str, row["target_ms"])) if row["target_ms"] else "?"
+        und = "-" if row["underrun_lines"] is None else row["underrun_lines"]
+        print(f"{k:4d}  {row['latency_median_ms']:9.1f} ({row['latency_p95_ms']:6.1f})   "
+              f"{row['dropouts']:4d} ({row['dropout_ms']:5.0f})   {row['slips_after_startup']:12d}   "
+              f"{row['startup_skips']:14d}   {tgt:>12}   {und:>9}")
+    ok = [r for r in rows if "fatal" not in r]
+    summary = {"runs": rows}
+    if ok:
+        med = [r["latency_median_ms"] for r in ok]
+        summary.update(
+            runs_ok=len(ok), runs_failed=len(rows) - len(ok),
+            runs_without_dropout=sum(1 for r in ok if r["dropouts"] == 0),
+            runs_without_slip=sum(1 for r in ok if r["slips_after_startup"] == 0),
+            latency_median_of_medians_ms=float(np.median(med)), latency_median_range_ms=[min(med), max(med)])
+        print(f"\n  {summary['runs_without_dropout']}/{len(ok)} runs with no dropout, "
+              f"{summary['runs_without_slip']}/{len(ok)} with no slip after start-up")
+        print(f"  latency medians: {np.median(med):.1f} ms (range {min(med):.1f} to {max(med):.1f} across runs)")
+        targets = {tuple(r["target_ms"]) for r in ok if r["target_ms"]}
+        if len(targets) > 1:
+            print("  WARNING: the phone's playout target changed between runs:", sorted(targets))
+    (root / "summary.json").write_text(json.dumps(summary, indent=2))
+    print(f"\nsummary saved: {root / 'summary.json'}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--duration", type=float, default=30.0)
@@ -441,6 +550,12 @@ def main():
     ap.add_argument("--out-device", type=int)
     ap.add_argument("--label", default="", help="short tag stored in the result, e.g. 'baseline'")
     ap.add_argument("--out-dir", default=str(Path(__file__).parent / "results"))
+    ap.add_argument("--repeat", type=int, default=1, metavar="N", help="run N times and print a summary across runs")
+    ap.add_argument("--pause", type=float, default=5.0, help="seconds of quiet between repeated runs")
+    ap.add_argument("--adb", metavar="SERIAL",
+                    help="adb serial of the phone (e.g. 10.0.0.202:43635); records its playout target, buffer "
+                         "level and underrun lines for each run")
+    ap.add_argument("--package", default="com.cuscus.wifiaudiostreaming", help="phone app package for --adb")
     ap.add_argument("--analyze", metavar="WAV", help="analyze an existing recording instead of playing")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
@@ -471,34 +586,49 @@ def main():
         sys.exit(0 if ok else 1)
 
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    meta = {"label": a.label, "timestamp": stamp, "duration_s": a.duration, "level_db": a.level,
+            "bed_db": a.bed, "seed": a.seed}
+
     if a.analyze:
         sr, rec = wavfile.read(a.analyze)
         if sr != SR or rec.ndim != 2 or rec.shape[1] < 2:
             sys.exit(f"{a.analyze}: need a {SR} Hz recording with >=2 channels")
-        rec = rec[:, :2].astype(np.float32)
         run_dir = Path(a.out_dir) / (stamp + "-reanalysis")
-    else:
-        import sounddevice as sd
-        i, o = find_devices(a.device_name, a.in_device, a.out_device)
-        out_buf = np.stack([played, played], axis=1)
-        print(f"playing {a.duration:.0f} s of clicks at {a.level:.0f} dBFS peak (+{PRE_S:.0f}s pre, +{POST_S:.0f}s post)...")
-        try:
-            rec = sd.playrec(out_buf, samplerate=SR, channels=2, device=(i, o), dtype="float32")
-            sd.wait()
-        except sd.PortAudioError as e:
-            sys.exit(f"audio error: {e}\nSet the Focusrite to {SR} Hz in its control panel / Windows sound settings.")
-        run_dir = Path(a.out_dir) / stamp
-    run_dir.mkdir(parents=True, exist_ok=True)
-    if not a.analyze:
-        wavfile.write(run_dir / "recording.wav", SR, rec)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        res = analyze(rec[:, :2].astype(np.float32), sched)
+        res["meta"] = {**meta, "source": a.analyze}
+        report(res)
+        (run_dir / "result.json").write_text(json.dumps(res, indent=2))
+        print(f"\nsaved: {run_dir}")
+        sys.exit(2 if "fatal" in res else 3 if res["issues"] else 0)
 
-    res = analyze(rec, sched)
-    res["meta"] = {"label": a.label, "timestamp": stamp, "duration_s": a.duration, "level_db": a.level,
-                   "bed_db": a.bed, "seed": a.seed, "source": a.analyze or "live"}
-    report(res)
-    (run_dir / "result.json").write_text(json.dumps(res, indent=2))
-    print(f"\nsaved: {run_dir}")
-    sys.exit(2 if "fatal" in res else 3 if res["issues"] else 0)
+    n = max(1, a.repeat)
+    i, o = find_devices(a.device_name, a.in_device, a.out_device)
+    root = Path(a.out_dir) / (stamp if n == 1 else f"{stamp}-x{n}")
+    results = []
+    for k in range(n):
+        run_dir = root if n == 1 else root / f"run{k + 1}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        if n > 1:
+            print(f"\n######## run {k + 1} of {n} ########")
+        since = phone_clock(a.adb) if a.adb else None
+        rec = play_and_record(played, i, o, a)
+        wavfile.write(run_dir / "recording.wav", SR, rec)
+        res = analyze(rec, sched)
+        res["meta"] = {**meta, "source": "live", "run": k + 1, "of": n}
+        if since:
+            res["phone"] = phone_log(a.adb, a.package, since)
+        report(res)
+        if since:
+            print_phone(res["phone"])
+        (run_dir / "result.json").write_text(json.dumps(res, indent=2))
+        print(f"\nsaved: {run_dir}")
+        results.append(res)
+        if k < n - 1:
+            time.sleep(a.pause)
+    if n > 1:
+        summarize(results, root)
+    sys.exit(2 if any("fatal" in r for r in results) else 3 if any(r["issues"] for r in results) else 0)
 
 
 if __name__ == "__main__":
