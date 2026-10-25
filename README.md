@@ -271,6 +271,13 @@ service, fixed jitter buffer, AudioTrack fast track, 384-frame track buffer), pr
 - Stalls of ~130 ms happen on both networks, so the phone is the main suspect. Not yet checked: Samsung's
   "Wi-Fi power saving mode" (Intelligent Wi-Fi) and "Nearby device scanning".
 
+- **PC hotspot** (Windows Mobile Hotspot on the dev desktop, PC wired to Verma2, phone at 192.168.137.135,
+  shown as Wi-Fi 6): max stall 86 ms while the PC's Wi-Fi was also on Verma, and still 135 ms with it
+  disconnected. Stalls of about 80 ms in roughly 40% of seconds, with the same ~11 s periodic pattern as
+  on Verma. The pattern shows up on every network, so **the phone is the prime suspect**. Next step:
+  Samsung "Wi-Fi power saving mode" / "Nearby device scanning".
+  The hotspot also died once when the PC's Wi-Fi was disconnected from Verma. Turn hotspot power saving off.
+
 **Paused 2026-10-25.** Options: (1) PC hotspot direct link, (2) check the Samsung Wi-Fi settings above,
 (3) accept roughly 150 ms+ latency, with our app or WFAS. To resume: the phone is on Verma, wireless
 debugging is likely off, and the PC's Wi-Fi is on Verma while its Ethernet stays on Verma2.
