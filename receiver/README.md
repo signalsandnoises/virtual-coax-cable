@@ -26,7 +26,7 @@ $s = '<serial>'   # e.g. 10.0.0.202:43635 (see: & $adb mdns services)
 & $adb -s $s shell pm grant com.vcx.receiver android.permission.POST_NOTIFICATIONS   # or tap Allow on first launch
 
 # Start (or restart with new settings). Extras are optional; defaults shown.
-& $adb -s $s shell am start-foreground-service -n com.vcx.receiver/.ReceiverService -a com.vcx.receiver.START --ei target_ms 40 --es wifi_mode low_latency --ei track_bursts 2 --ei steer 1 --ei align 1 --ei siltrim 1
+& $adb -s $s shell am start-foreground-service -n com.vcx.receiver/.ReceiverService -a com.vcx.receiver.START --ei target_ms 40 --es wifi_mode low_latency --ei track_bursts 2 --ei steer 1 --ei align 1 --ei siltrim 1 --ei write_frames 0
 
 # Stop (stops playout, releases the Wi-Fi/wake locks, stops the service)
 & $adb -s $s shell am start-foreground-service -n com.vcx.receiver/.ReceiverService -a com.vcx.receiver.STOP
@@ -40,6 +40,7 @@ $s = '<serial>'   # e.g. 10.0.0.202:43635 (see: & $adb mdns services)
 | `steer` | 0/1, default 1 | Depth steering by resampling (0 = ratio fixed at 0 ppm, for A/B tests) |
 | `align` | 0/1, default 1 | One-time start-up alignment (drop/insert whole packets ~300 ms after priming) |
 | `siltrim` | 0/1, default 1 | Drop/insert whole silent packets when lead is > 5 ms off target |
+| `write_frames` | 0 or 16..4800, default 0 = one HAL burst | Frames per blocking AudioTrack write (pulled through the resampler; the jitter buffer stays in 120-frame packets) |
 
 ## How latency is held (milestone 2)
 
@@ -84,6 +85,21 @@ Playout chain: `JitterBuffer` -> `CubicResampler` (Catmull-Rom, fractional phase
   when smoothed lead (before silence edits) rises > 5 ms within 500 ms (max 1 line/s). A negative
   `dmin_shift_ms` of the same size means packets started arriving earlier (sender left silence fill,
   or Wi-Fi left a slow phase), not that audio was added.
+- `VCX-PLAY writes=.. write_frames=.. gap_max_ms=.. write_max_ms=.. short_writes=.. q_min=.. q_max=.. qts_min=.. qts_max=.. gc=.. gc_ms=.. bgc=.. bgc_ms=.. cpu=..`
+  once a second: max time between successive write() returns, max single write() block, writes that
+  returned short or 0, frames queued in the AudioTrack (written - playbackHeadPosition) just before
+  (min) / after (max) each write, the same against the AudioTimestamp position (qts, includes the HAL
+  pipeline), ART GC and blocking-GC count/time deltas, and the CPU the playout thread last ran on.
+- `VCX-UNDERRUN count=+N total=.. depth_ms=.. lead_ms=.. <the VCX-PLAY values up to that moment>` in
+  the second an AudioTrack underrun happened.
 - Events: `VCX-PRIMED`, `VCX-ALIGN`, `VCX-CAP` (depth > target + 500 ms, trimmed to target),
   `VCX-REBUFFER` (no data for 1 s, re-priming), `VCX-RESYNC` (seq jump, sender restarted),
   `VCX-DISCOVER`, `VCX-STOP`.
+
+## Hot path
+
+The receive loop, jitter buffer, resampler, playout chain and playout loop do not allocate per
+packet or per write: one reused `AudioPacket`, the audio socket connected to the sender after its
+first packet (libcore then skips the per-receive source address; it disconnects after 2 s idle so a
+restarted sender is accepted), preallocated rings, a no-allocation sort, and a primitive `UsClock`.
+`AllocationFreeTest` checks this on the JVM with HotSpot's per-thread allocation counter.

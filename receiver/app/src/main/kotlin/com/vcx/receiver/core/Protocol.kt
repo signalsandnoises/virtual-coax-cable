@@ -43,13 +43,36 @@ data class Header(
 /**
  * A parsed AUDIO packet. Payloads are not copied: they are views into [data].
  * Payload 0 is the current one (seq), payload j (1..k) is the redundant copy of seq - j.
+ *
+ * Mutable so the receive thread can reuse one instance for every packet
+ * ([PacketCodec.parseAudioInto]) without allocating.
  */
-class AudioPacket(val header: Header, val data: ByteArray, private val bodyOffset: Int) {
-    val seq: Int get() = header.seq
-    val frames: Int get() = header.frames
-    val k: Int get() = header.k
-    val flags: Int get() = header.flags
-    val payloadBytes: Int get() = header.frames * Vcx.BYTES_PER_FRAME
+class AudioPacket {
+    var type = 0; private set
+    var flags = 0; private set
+    var seq = 0; private set
+    var timestampUs = 0L; private set
+    var frames = 0; private set
+    var format = 0; private set
+    var k = 0; private set
+    var data: ByteArray = EMPTY; private set
+    private var bodyOffset = 0
+
+    /** Allocates; for tests and diagnostics only. */
+    val header: Header get() = Header(type, flags, seq, timestampUs, frames, format, k)
+    val payloadBytes: Int get() = frames * Vcx.BYTES_PER_FRAME
+
+    internal fun set(buf: ByteArray, off: Int) {
+        type = PacketCodec.u8(buf, off + 5)
+        flags = PacketCodec.u16(buf, off + 6)
+        seq = PacketCodec.i32(buf, off + 8)
+        timestampUs = PacketCodec.i64(buf, off + 12)
+        frames = PacketCodec.u16(buf, off + 20)
+        format = PacketCodec.u8(buf, off + 22)
+        k = PacketCodec.u8(buf, off + 23)
+        data = buf
+        bodyOffset = off + Vcx.HEADER_SIZE
+    }
 
     fun payloadOffset(j: Int): Int {
         require(j in 0..k) { "payload index $j out of 0..$k" }
@@ -57,6 +80,10 @@ class AudioPacket(val header: Header, val data: ByteArray, private val bodyOffse
     }
 
     fun payload(j: Int): ByteArray = data.copyOfRange(payloadOffset(j), payloadOffset(j) + payloadBytes)
+
+    private companion object {
+        val EMPTY = ByteArray(0)
+    }
 }
 
 /** u32 sequence arithmetic with wrap-around. */
@@ -84,15 +111,28 @@ object PacketCodec {
         )
     }
 
-    /** Returns null for anything that is not a well-formed AUDIO packet we can play. */
+    /** Returns null for anything that is not a well-formed AUDIO packet we can play. Allocates. */
     fun parseAudio(buf: ByteArray, off: Int, len: Int): AudioPacket? {
-        val h = parseHeader(buf, off, len) ?: return null
-        if (h.type != Vcx.TYPE_AUDIO) return null
-        if (h.format != Vcx.FORMAT_48K_STEREO_S16) return null
-        if (h.frames <= 0 || h.frames > Vcx.MAX_FRAMES_PER_PACKET) return null
-        val needed = Vcx.HEADER_SIZE.toLong() + h.frames.toLong() * Vcx.BYTES_PER_FRAME * (1 + h.k)
-        if (len < needed) return null
-        return AudioPacket(h, buf, off + Vcx.HEADER_SIZE)
+        val p = AudioPacket()
+        return if (parseAudioInto(buf, off, len, p)) p else null
+    }
+
+    /**
+     * Allocation-free AUDIO parse into a reused [out]. Returns false (and leaves [out] undefined) for
+     * anything that is not a well-formed AUDIO packet we can play.
+     */
+    fun parseAudioInto(buf: ByteArray, off: Int, len: Int, out: AudioPacket): Boolean {
+        if (len < Vcx.HEADER_SIZE || off < 0 || off + len > buf.size) return false
+        for (i in 0 until 4) if (buf[off + i] != Vcx.MAGIC[i]) return false
+        if (u8(buf, off + 4) != Vcx.VERSION) return false
+        if (u8(buf, off + 5) != Vcx.TYPE_AUDIO) return false
+        if (u8(buf, off + 22) != Vcx.FORMAT_48K_STEREO_S16) return false
+        val frames = u16(buf, off + 20)
+        if (frames <= 0 || frames > Vcx.MAX_FRAMES_PER_PACKET) return false
+        val needed = Vcx.HEADER_SIZE.toLong() + frames.toLong() * Vcx.BYTES_PER_FRAME * (1 + u8(buf, off + 23))
+        if (len < needed) return false
+        out.set(buf, off)
+        return true
     }
 
     /** Returns the PC name (possibly empty) if this is a DISCOVER packet, else null. */

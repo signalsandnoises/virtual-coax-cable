@@ -40,7 +40,7 @@ class PlayoutChain(
     val align: Boolean = true,
     val silTrim: Boolean = true,
     private val delay: DelayStats? = null,
-    private val clockUs: (() -> Long)? = null,
+    private val clockUs: UsClock? = null,
     private val controller: DepthController = DepthController(),
     private val alignWaitMs: Int = 300,
     private val updateMs: Int = 100,
@@ -89,9 +89,17 @@ class PlayoutChain(
         private set
     private var depthMinFrames = Double.MAX_VALUE
     private val minLock = Any()
+    private val jumpCounters = LongArray(3)
 
-    override fun read(out: ByteArray): Int {
-        val n = resampler.read(out)
+    /** One playout write of the default 120 frames. */
+    override fun read(out: ByteArray): Int = read(out, Vcx.DEFAULT_FRAMES)
+
+    /**
+     * One playout write: produces exactly [frames] output frames (any size; the jitter buffer stays
+     * in packets), or 0 while not primed. Allocation-free.
+     */
+    fun read(out: ByteArray, frames: Int): Int {
+        val n = resampler.read(out, frames)
         if (n == 0) {
             if (state != State.IDLE) {
                 state = State.IDLE
@@ -118,7 +126,7 @@ class PlayoutChain(
             if (edits < 0) silLogDropped -= edits else silLogInserted += edits
         }
 
-        sample()
+        sample(n)
         framesInState += n
         when (state) {
             State.ALIGNING -> if (framesInState >= alignWaitMs * Vcx.SAMPLE_RATE / 1000) doAlign()
@@ -140,7 +148,7 @@ class PlayoutChain(
         return n
     }
 
-    private fun sample() {
+    private fun sample(frames: Int) {
         val st = jitter.leadState()
         val raw = (st shr 32).toInt()
         val highest = st.toInt()
@@ -149,7 +157,7 @@ class PlayoutChain(
         val depth = raw.coerceAtLeast(0) + res
         var lead = depth
         if (delay != null && clockUs != null) {
-            val now = clockUs.invoke()
+            val now = clockUs.nowUs()
             val e = delay.expectedArrivalUs(highest, now)
             if (!e.isNaN()) {
                 lead = raw + res + (now - e) * Vcx.SAMPLE_RATE / 1e6
@@ -160,7 +168,7 @@ class PlayoutChain(
                     gapHist.shift(d); leadWin.shift(d); gapRefFrames += d
                 }
                 lastDminUs = dMin
-                gapHist.offer(lead - depth)
+                gapHist.offer(lead - depth, frames)
             }
         }
         lastDepthFrames = depth
@@ -208,8 +216,9 @@ class PlayoutChain(
 
     /** [lead] here excludes silence edits, so a jump that siltrim corrected is still reported. */
     private fun checkJump(lead: Double, depth: Double) {
-        val c = jitter.counters()
-        val dMin = delay?.dMinUs() ?: Double.NaN
+        val c = jumpCounters
+        jitter.fillJumpCounters(c)
+        val dMin = if (delay != null) delay.dMinUs() else Double.NaN
         // Oldest valid snapshot within the last 500 ms and the minimum lead over them.
         var minLead = Double.MAX_VALUE
         var oldest: Snap? = null
@@ -225,14 +234,14 @@ class PlayoutChain(
             log(
                 "VCX-JUMP lead_ms=${ms(minLead)}->${ms(lead)} depth_ms=${ms(oldest.depth)}->${ms(depth)} " +
                     "seq=${Seq.toUnsigned(oldest.highest + 1)}..${Seq.toUnsigned(lastHighest)} " +
-                    "arrived=${c.received - oldest.received} expected=${500 * Vcx.SAMPLE_RATE / 1000 / maxOf(1, jitter.framesPerPacket)} " +
-                    "concealed=${c.concealed - oldest.concealed} late=${c.late - oldest.late} dmin_shift_ms=$shift " +
+                    "arrived=${c[0] - oldest.received} expected=${500 * Vcx.SAMPLE_RATE / 1000 / maxOf(1, jitter.framesPerPacket)} " +
+                    "concealed=${c[1] - oldest.concealed} late=${c[2] - oldest.late} dmin_shift_ms=$shift " +
                     "sil_edits=${((editAccFrames - oldest.edits) / maxOf(1, jitter.framesPerPacket)).roundToInt()}",
             )
             lastJumpLogFrames = totalFrames
         }
         val s = snaps[snapIdx]
-        s.lead = lead; s.depth = depth; s.received = c.received; s.concealed = c.concealed; s.late = c.late
+        s.lead = lead; s.depth = depth; s.received = c[0]; s.concealed = c[1]; s.late = c[2]
         s.highest = lastHighest; s.dMinUs = dMin; s.edits = editAccFrames; s.valid = true
         snapIdx = (snapIdx + 1) % snaps.size
     }
@@ -315,7 +324,7 @@ class PlayoutChain(
             val m = minOf(n, count)
             if (m == 0) return 0.0
             for (i in 0 until m) sortBuf[i] = v[(idx - 1 - i + WINDOW_SAMPLES * 2) % WINDOW_SAMPLES]
-            java.util.Arrays.sort(sortBuf, 0, m)
+            DoubleSort.sort(sortBuf, m)
             val lo = m / 4
             val hi = maxOf(lo + 1, m - m / 4)
             var s = 0.0
@@ -325,8 +334,9 @@ class PlayoutChain(
     }
 
     /**
-     * 10 s of gap samples, each the mean of [AVG] consecutive reads (20 ms). Averaging (not plain
-     * decimation) avoids aliasing with the sender's packet bursts (4 packets per 10 ms capture chunk).
+     * 10 s of gap samples, each the frame-weighted mean over [AVG_FRAMES] of output (20 ms), whatever
+     * the write size. Averaging (not plain decimation) avoids aliasing with the sender's packet
+     * bursts (4 packets per 10 ms capture chunk).
      */
     private class GapHistory {
         private val v = DoubleArray(500)
@@ -336,9 +346,10 @@ class PlayoutChain(
         private var idx = 0
         private var acc = 0.0
         private var accN = 0
-        fun offer(x: Double) {
-            acc += x
-            if (++accN < AVG) return
+        fun offer(x: Double, frames: Int) {
+            acc += x * frames
+            accN += frames
+            if (accN < AVG_FRAMES) return
             val m = acc / accN
             acc = 0.0; accN = 0
             v[idx] = m
@@ -353,10 +364,10 @@ class PlayoutChain(
         fun percentile(p: Double): Double {
             if (count == 0) return 0.0
             for (i in 0 until count) sortBuf[i] = v[(idx - 1 - i + v.size * 2) % v.size]
-            java.util.Arrays.sort(sortBuf, 0, count)
+            DoubleSort.sort(sortBuf, count)
             return sortBuf[((count - 1) * p).roundToInt()]
         }
-        companion object { const val AVG = 8 }
+        companion object { const val AVG_FRAMES = 960 }
     }
 
     companion object {
@@ -364,7 +375,7 @@ class PlayoutChain(
         const val GAP_PERCENTILE = 0.3
         const val SIL_CHECK_READS = 2
         const val SIL_SHORT_SAMPLES = 8
-        /** 1 s of samples at one sample per 120-frame write. */
+        /** 1 s of samples at one sample per 120-frame write (1.6 s at 192-frame writes). */
         const val WINDOW_SAMPLES = 400
         const val MIN_SAMPLES = 40
         const val SIL_THRESHOLD_MS = 5.0

@@ -1,4 +1,4 @@
-# virtual-coax-cable
+﻿# virtual-coax-cable
 
 A wireless stand-in for a 40-foot S/PDIF coax cable.
 
@@ -140,8 +140,8 @@ adb -s <serial> logcat -d --pid=<pid> -v time | findstr "PLAYOUT WFAS-METRICS un
 
 ```
 Windows default output (Focusrite "Speakers")
-   ├── hardware cable ───────────────────────────────► Focusrite input 1   (reference)
-   └── loopback capture ► desktop app ► Wi-Fi ► phone ► aux ► Focusrite input 2   (device under test)
+   â”œâ”€â”€ hardware cable â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â–º Focusrite input 1   (reference)
+   â””â”€â”€ loopback capture â–º desktop app â–º Wi-Fi â–º phone â–º aux â–º Focusrite input 2   (device under test)
 ```
 
 Windows' default playback device must be the Focusrite, and it must run at **48 kHz**. (The
@@ -254,13 +254,13 @@ service, fixed jitter buffer, AudioTrack fast track, 384-frame track buffer), pr
 ### Milestone 2: Wi-Fi stalls on Verma2 (2026-10-25)
 
 - Phone-side arrival gaps of 40-190 ms (once 600 ms) happened in 35-70% of seconds, while idle-streaming
-  silence with the screen on. The PC sender's max gap was 3 ms, and PC→router pings were 0-2 ms.
+  silence with the screen on. The PC sender's max gap was 3 ms, and PCâ†’router pings were 0-2 ms.
 - The Wi-Fi lock mode made no difference: low_latency, high_perf and none were all bad. Background scan time
   was about 0, Bluetooth is off, and having the app in the foreground didn't help.
-- Phone→router ping (0.2 s interval, 150 pings): median 4.5 ms, 23 above 20 ms, max 74 ms. The link is
+- Phoneâ†’router ping (0.2 s interval, 150 pings): median 4.5 ms, 23 above 20 ms, max 74 ms. The link is
   11ax at 5220 MHz, RSSI -53, 720/864 Mbps.
 - **Idea to try (from Rishabh):** a PC hotspot. Windows Mobile Hotspot on the PC's Realtek 8922AE Wi-Fi 7
-  card, with the phone joined to it, gives a direct PC→phone link that skips the router. The phone still
+  card, with the phone joined to it, gives a direct PCâ†’phone link that skips the router. The phone still
   gets internet through the PC.
 - Retest on Verma2 (`20261025-001246`, M2, target 40): +26.7 ms, 2 dropouts. Phone net delay max 160 ms.
   Steering sat at +1000 ppm with depth 52-108 ms, a receiver bug (depth creeps up after stalls). A fix
@@ -286,6 +286,25 @@ service, fixed jitter buffer, AudioTrack fast track, 384-frame track buffer), pr
   short dropouts per run (1-19 ms) and 1-2 AudioTrack underruns per run. Cause: the sender inserts
   extra audio when WASAPI delivery is ~20 ms late (it hits the 20 ms silence-fill threshold); about 402.5
   packets/s while capturing. Sender fix in progress.
+
+- `20261025-010616-x5` (sender fix, track_bursts 2): send ratio 1.0000 and no fill frames. 2 of 5 runs clean,
+  the rest had 1 short dropout each, matching AudioTrack underruns. -30.0 ms.
+- `track_bursts 3` (576 frames): no better, 1-2 underruns per run. -28.0 ms.
+- `20261025-011349-x5` **track_bursts 6 (1152 frames): 5/5 CLEAN**, 0 underruns, 0 lost, **-13.8 ms**
+  (range -15.6 to -12.7).
+- Soak `20261025-011725` (tb6, 10 min, screen on): clean for 400 s with 0 underruns all run. Then a
+  ~30 s Wi-Fi episode (400-431 s) had 53 dropouts, stalls up to 400 ms about every 1.2 s, and 2123 late
+  packets. This is the same kind of episode seen once in a 2-min jitter check. Suspect: the PC's
+  hotspot radio (background scans by the disconnected "Wi-Fi" station interface?) or the phone. Not
+  yet investigated.
+- Instrumented, allocation-free build (`VCX-PLAY`/`VCX-UNDERRUN`), tb2, write 192: still 1-3 underruns
+  per run (-27.5 ms). GC = 0 at every underrun, and the jitter buffer was 40-53 ms. At underruns,
+  write() blocked 12-20 ms, and the queue measured from timestamps is ~1100-1570 frames (23-33 ms)
+  beyond the 384-frame track. So the stall is **below AudioTrack** (mixer/HAL). The phone's "aux" is
+  probably a USB-C dongle (the S23 has no jack), i.e. USB audio. A bigger track buffer absorbs it.
+  Playout thread runs on little cores (cpu 0-2).
+- **Next:** screen-off acceptance on tb6; try tb4 and a lower jitter target (net delay p99 is about
+  20-30 ms) to win back latency; investigate the 30 s Wi-Fi episodes.
 
 **Paused 2026-10-25.** Options: (1) PC hotspot direct link, (2) check the Samsung Wi-Fi settings above,
 (3) accept roughly 150 ms+ latency, with our app or WFAS. To resume: the phone is on Verma, wireless

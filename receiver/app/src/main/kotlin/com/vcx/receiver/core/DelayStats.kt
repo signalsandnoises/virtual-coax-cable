@@ -27,7 +27,8 @@ class DelayStats(private val windowSec: Int = 10) {
     private val bucketMin = DoubleArray(windowSec) { Double.POSITIVE_INFINITY }
     private var curSec = Long.MIN_VALUE
 
-    private var rel = FloatArray(1024)
+    /** Fixed size: never grows, so onArrival() never allocates. Extra arrivals in a second are not ranked. */
+    private val rel = FloatArray(4096)
     private var relCount = 0
     private var gapMaxUs = 0L
 
@@ -45,8 +46,7 @@ class DelayStats(private val windowSec: Int = 10) {
         val b = Math.floorMod(curSec, windowSec.toLong()).toInt()
         if (d < bucketMin[b]) bucketMin[b] = d
         val dMin = minBucket()
-        if (relCount == rel.size) rel = rel.copyOf(rel.size * 2)
-        rel[relCount++] = ((d - dMin) / 1000.0).toFloat()
+        if (relCount < rel.size) rel[relCount++] = ((d - dMin) / 1000.0).toFloat()
 
         if (lastArrivalUs >= 0) {
             val gap = arrivalUs - lastArrivalUs

@@ -3,7 +3,8 @@ package com.vcx.receiver.core
 /**
  * Variable-ratio resampler, 4-point cubic Hermite (Catmull-Rom), interleaved stereo s16le.
  *
- * Pulls packets from [source] and always produces [chunkFrames] output frames per read() (or 0 when
+ * Pulls packets from [source] and produces exactly the requested output frames per read (default
+ * [chunkFrames]), or 0 when
  * the source has nothing yet). The fractional read position is kept across packets.
  *
  * Ratio convention: [ratePpm] > 0 consumes input faster than nominal (step = 1 + ppm * 1e-6 input
@@ -19,7 +20,8 @@ class CubicResampler(
     @Volatile
     override var ratePpm: Float = 0f
 
-    private var buf = FloatArray(2 * 4096) // interleaved L R; frame 0 is history
+    // Interleaved L R; frame 0 is history. Sized for the largest write plus one packet, so it never grows.
+    private var buf = FloatArray(2 * (2 * Vcx.MAX_FRAMES_PER_PACKET + 8))
     private var count = 0                  // frames in buf
     private var pos = 1.0                  // position of the next output frame, in buf frames
     private var active = false
@@ -38,10 +40,13 @@ class CubicResampler(
         pos = 1.0
     }
 
-    override fun read(out: ByteArray): Int {
+    override fun read(out: ByteArray): Int = read(out, chunkFrames)
+
+    /** Produces exactly [frames] output frames into [out], or 0 if the source has nothing yet. Allocation-free. */
+    fun read(out: ByteArray, frames: Int): Int {
         val step = 1.0 + ratePpm * 1e-6
         var produced = 0
-        while (produced < chunkFrames) {
+        while (produced < frames) {
             val i = pos.toInt()
             if (i + 2 >= count) {
                 if (!pull()) break
@@ -65,12 +70,12 @@ class CubicResampler(
             pos += step
         }
         if (produced == 0) return 0
-        if (produced < chunkFrames) {
+        if (produced < frames) {
             // Source ran dry mid-chunk (rebuffer): pad with silence.
-            java.util.Arrays.fill(out, produced * Vcx.BYTES_PER_FRAME, chunkFrames * Vcx.BYTES_PER_FRAME, 0)
+            java.util.Arrays.fill(out, produced * Vcx.BYTES_PER_FRAME, frames * Vcx.BYTES_PER_FRAME, 0)
         }
         compact()
-        return chunkFrames
+        return frames
     }
 
     private fun pull(): Boolean {

@@ -246,6 +246,12 @@ class JitterBuffer(
         silInsertBudget = maxOf(0, insert)
     }
 
+    /** Fills [out] with received, concealed, late (allocation-free). */
+    @Synchronized
+    fun fillJumpCounters(out: LongArray) {
+        out[0] = received; out[1] = concealed; out[2] = late
+    }
+
     /** Net packets added (+) / removed (-) by silence edits since the last call. */
     @Synchronized
     fun pollSilenceEdits(): Int {

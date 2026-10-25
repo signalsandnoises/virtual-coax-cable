@@ -17,7 +17,7 @@ import android.util.Log
  *
  * adb control:
  *   am start-foreground-service -n com.vcx.receiver/.ReceiverService -a com.vcx.receiver.START \
- *       --ei target_ms 40 --es wifi_mode low_latency --ei track_bursts 2 --ei steer 1 --ei align 1 --ei siltrim 1
+ *       --ei target_ms 40 --es wifi_mode low_latency --ei track_bursts 2 --ei steer 1 --ei align 1 --ei siltrim 1 --ei write_frames 0
  *   am start-foreground-service -n com.vcx.receiver/.ReceiverService -a com.vcx.receiver.STOP
  *
  * Every onStartCommand calls startForeground() first (also for STOP), because the system requires it
@@ -34,6 +34,7 @@ class ReceiverService : Service() {
         const val EXTRA_STEER = "steer"
         const val EXTRA_ALIGN = "align"
         const val EXTRA_SILTRIM = "siltrim"
+        const val EXTRA_WRITE_FRAMES = "write_frames"
 
         private const val CHANNEL_ID = "vcx_receiver"
         private const val NOTIFICATION_ID = 1
@@ -43,7 +44,7 @@ class ReceiverService : Service() {
         /** For the activity's status text. */
         fun statusText(): String {
             val e = current?.engine ?: return "stopped"
-            return "running target_ms=${e.targetMs} wifi_mode=${e.wifiMode} track_bursts=${e.trackBursts} steer=${e.steer} align=${e.align} siltrim=${e.silTrim}\n${e.statusLine}"
+            return "running target_ms=${e.targetMs} wifi_mode=${e.wifiMode} track_bursts=${e.trackBursts} steer=${e.steer} align=${e.align} siltrim=${e.silTrim} write_frames=${e.writeFrames}\n${e.statusLine}"
         }
     }
 
@@ -83,11 +84,12 @@ class ReceiverService : Service() {
         val steer = (intent?.getIntExtra(EXTRA_STEER, 1) ?: 1) != 0
         val align = (intent?.getIntExtra(EXTRA_ALIGN, 1) ?: 1) != 0
         val silTrim = (intent?.getIntExtra(EXTRA_SILTRIM, 1) ?: 1) != 0
+        val writeFrames = (intent?.getIntExtra(EXTRA_WRITE_FRAMES, 0) ?: 0).coerceIn(0, 4800)
 
         shutdown() // START while running restarts with the new settings
         acquireLocks(wifiMode)
         try {
-            engine = ReceiverEngine(applicationContext, targetMs, wifiMode, trackBursts, steer, align, silTrim).also { it.start() }
+            engine = ReceiverEngine(applicationContext, targetMs, wifiMode, trackBursts, steer, align, silTrim, writeFrames).also { it.start() }
             goForeground("Receiving, target $targetMs ms, Wi-Fi $wifiMode")
         } catch (e: Exception) {
             Log.e(TAG, "VCX-START failed: $e", e)

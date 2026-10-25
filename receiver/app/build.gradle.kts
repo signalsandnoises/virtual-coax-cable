@@ -20,6 +20,13 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+
+    testOptions {
+        unitTests.all {
+            // AllocationFreeTest: keep the JIT from scalar-replacing allocations it should detect.
+            it.jvmArgs("-XX:-DoEscapeAnalysis")
+        }
+    }
 }
 
 dependencies {
