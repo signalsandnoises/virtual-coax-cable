@@ -50,6 +50,9 @@ class MainActivity : Activity() {
             },
         )
 
+        // Restore Location if a previous stream died without doing so (crash / force-stop).
+        androidLocationGuard(this).recoverIfNeeded(streaming = ReceiverService.isStreaming())
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {

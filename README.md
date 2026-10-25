@@ -331,6 +331,12 @@ service, fixed jitter buffer, AudioTrack fast track, 384-frame track buffer), pr
   stopped 10:17:56; firmware scans aren't logged individually). Location was restored to on (mode 3)
   afterwards. Takeaway: Location off helps, and Samsung's screen-off roaming scans are the next suspect.
 
+- `20261025-102608` (10 min, screen off, "Switch to better Wi-Fi" off, Location **on**): 75 dropouts,
+  795 late, delay max 162 ms. The location scan bursts are back.
+- `20261025-103655` (same, plus the **app's automatic Location-off**, LocationGuard, which needs the
+  `pm grant ... WRITE_SECURE_SETTINGS`): **3 dropouts** (82 + 12 ms in one stall event at 215 s, plus 3 ms),
+  68 late, 1 underrun, **-17.2 ms**. Location was restored to mode 3 on STOP (verified).
+
 **Paused 2026-10-25.** Options: (1) PC hotspot direct link, (2) check the Samsung Wi-Fi settings above,
 (3) accept roughly 150 ms+ latency, with our app or WFAS. To resume: the phone is on Verma, wireless
 debugging is likely off, and the PC's Wi-Fi is on Verma while its Ethernet stays on Verma2.

@@ -24,9 +24,10 @@ $s = '<serial>'   # e.g. 10.0.0.202:43635 (see: & $adb mdns services)
 
 & $adb -s $s install -r receiver\app\build\outputs\apk\debug\app-debug.apk
 & $adb -s $s shell pm grant com.vcx.receiver android.permission.POST_NOTIFICATIONS   # or tap Allow on first launch
+& $adb -s $s shell pm grant com.vcx.receiver android.permission.WRITE_SECURE_SETTINGS  # lets the app switch Location off while streaming
 
 # Start (or restart with new settings). Extras are optional; defaults shown.
-& $adb -s $s shell am start-foreground-service -n com.vcx.receiver/.ReceiverService -a com.vcx.receiver.START --ei target_ms 40 --es wifi_mode low_latency --ei track_bursts 2 --ei steer 1 --ei align 1 --ei siltrim 1 --ei write_frames 0
+& $adb -s $s shell am start-foreground-service -n com.vcx.receiver/.ReceiverService -a com.vcx.receiver.START --ei target_ms 40 --es wifi_mode low_latency --ei track_bursts 2 --ei steer 1 --ei align 1 --ei siltrim 1 --ei write_frames 0 --ei location_off 1
 
 # Stop (stops playout, releases the Wi-Fi/wake locks, stops the service)
 & $adb -s $s shell am start-foreground-service -n com.vcx.receiver/.ReceiverService -a com.vcx.receiver.STOP
@@ -40,6 +41,7 @@ $s = '<serial>'   # e.g. 10.0.0.202:43635 (see: & $adb mdns services)
 | `steer` | 0/1, default 1 | Depth steering by resampling (0 = ratio fixed at 0 ppm, for A/B tests) |
 | `align` | 0/1, default 1 | One-time start-up alignment (drop/insert whole packets ~300 ms after priming) |
 | `siltrim` | 0/1, default 1 | Drop/insert whole silent packets when lead is > 5 ms off target |
+| `location_off` | 0/1, default 1 | Switch Location off while streaming, restore it afterwards (needs WRITE_SECURE_SETTINGS) |
 | `write_frames` | 0 or 16..4800, default 0 = one HAL burst | Frames per blocking AudioTrack write (pulled through the resampler; the jitter buffer stays in 120-frame packets) |
 
 ## How latency is held (milestone 2)
@@ -103,3 +105,21 @@ packet or per write: one reused `AudioPacket`, the audio socket connected to the
 first packet (libcore then skips the per-receive source address; it disconnects after 2 s idle so a
 restarted sender is accepted), preallocated rings, a no-allocation sort, and a primitive `UsClock`.
 `AllocationFreeTest` checks this on the JVM with HotSpot's per-thread allocation counter.
+
+## Location off while streaming
+
+Samsung location geofencing triggers full Wi-Fi scans every few seconds while Location is on, and each
+scan stalls the stream for 100-500 ms. With `location_off=1` (default) and WRITE_SECURE_SETTINGS
+granted, the service switches Location off at START and restores it only when streaming actually
+stops: on STOP, on service destroy, or at the next start after a crash/force-stop. Swiping the app
+from recents does not stop the stream and leaves Location off.
+
+- It only restores what it changed: if Location was already off, it is left off and never turned on.
+- The previous mode and a "restore needed" flag are committed to SharedPreferences before Location is
+  touched. After a crash or force-stop, the next service or activity start restores Location.
+- A START while streaming does not toggle Location back on in between.
+- Mechanism: `Settings.Secure.putInt(LOCATION_MODE, 0)`, verified with `LocationManager.isLocationEnabled()`,
+  falling back to the hidden `LocationManager.setLocationEnabledForUser` by reflection.
+- Logs: `VCX-LOCATION off (was mode=3, via=secure_setting, verified=true)`,
+  `VCX-LOCATION restored mode=3 via=secure_setting verified=true (stop)`, or
+  `VCX-LOCATION skipped: no WRITE_SECURE_SETTINGS` (streaming continues normally).

@@ -47,6 +47,8 @@ class ReceiverEngine(
     val silTrim: Boolean,
     /** Frames per AudioTrack write; 0 = one HAL burst. */
     private val writeFramesRequested: Int = 0,
+    /** Only for the VCX-START line; LocationGuard (in the service) does the work. */
+    private val locationOff: Boolean = false,
 ) {
     @Volatile private var running = false
     @Volatile private var lastSource: SocketAddress? = null
@@ -101,7 +103,7 @@ class ReceiverEngine(
             "VCX-START target_ms=$targetMs wifi_mode=$wifiMode track_frames=${output.bufferFrames} " +
                 "burst_frames=${output.burstFrames} sample_rate=${Vcx.SAMPLE_RATE} track_bursts=$trackBursts " +
                 "write_frames=$writeFrames steer=${if (steer) 1 else 0} align=${if (align) 1 else 0} " +
-                "siltrim=${if (silTrim) 1 else 0} transfer_mode=stream " +
+                "siltrim=${if (silTrim) 1 else 0} location_off=${if (locationOff) 1 else 0} transfer_mode=stream " +
                 "track_capacity=${output.capacityFrames} min_buffer_bytes=${output.minBufferBytes} " +
                 "fast_track=${output.isFastTrack} native_rate=${output.nativeSampleRate} " +
                 "rcvbuf=${audioSocket.receiveBufferSize}",

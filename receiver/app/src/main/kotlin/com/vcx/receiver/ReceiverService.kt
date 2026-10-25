@@ -17,7 +17,7 @@ import android.util.Log
  *
  * adb control:
  *   am start-foreground-service -n com.vcx.receiver/.ReceiverService -a com.vcx.receiver.START \
- *       --ei target_ms 40 --es wifi_mode low_latency --ei track_bursts 2 --ei steer 1 --ei align 1 --ei siltrim 1 --ei write_frames 0
+ *       --ei target_ms 40 --es wifi_mode low_latency --ei track_bursts 2 --ei steer 1 --ei align 1 --ei siltrim 1 --ei write_frames 0 --ei location_off 1
  *   am start-foreground-service -n com.vcx.receiver/.ReceiverService -a com.vcx.receiver.STOP
  *
  * Every onStartCommand calls startForeground() first (also for STOP), because the system requires it
@@ -35,11 +35,15 @@ class ReceiverService : Service() {
         const val EXTRA_ALIGN = "align"
         const val EXTRA_SILTRIM = "siltrim"
         const val EXTRA_WRITE_FRAMES = "write_frames"
+        const val EXTRA_LOCATION_OFF = "location_off"
 
         private const val CHANNEL_ID = "vcx_receiver"
         private const val NOTIFICATION_ID = 1
 
         @Volatile private var current: ReceiverService? = null
+
+        /** True while an engine is running (for crash-recovery decisions). */
+        fun isStreaming(): Boolean = current?.engine != null
 
         /** For the activity's status text. */
         fun statusText(): String {
@@ -52,10 +56,13 @@ class ReceiverService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
     private var multicastLock: WifiManager.MulticastLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private lateinit var locationGuard: com.vcx.receiver.core.LocationGuard
 
     override fun onCreate() {
         super.onCreate()
         current = this
+        locationGuard = androidLocationGuard(this)
+        locationGuard.recoverIfNeeded(streaming = false) // restore after a crash / force-stop
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "Audio receiver", NotificationManager.IMPORTANCE_LOW),
@@ -69,6 +76,7 @@ class ReceiverService : Service() {
         if (action == ACTION_STOP) {
             Log.i(TAG, "STOP requested")
             shutdown()
+            locationGuard.restore("stop")
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
@@ -85,16 +93,19 @@ class ReceiverService : Service() {
         val align = (intent?.getIntExtra(EXTRA_ALIGN, 1) ?: 1) != 0
         val silTrim = (intent?.getIntExtra(EXTRA_SILTRIM, 1) ?: 1) != 0
         val writeFrames = (intent?.getIntExtra(EXTRA_WRITE_FRAMES, 0) ?: 0).coerceIn(0, 4800)
+        val locationOff = (intent?.getIntExtra(EXTRA_LOCATION_OFF, 1) ?: 1) != 0
 
-        shutdown() // START while running restarts with the new settings
+        shutdown() // START while running restarts with the new settings (Location stays as it is)
         acquireLocks(wifiMode)
+        locationGuard.engage(locationOff)
         try {
-            engine = ReceiverEngine(applicationContext, targetMs, wifiMode, trackBursts, steer, align, silTrim, writeFrames).also { it.start() }
+            engine = ReceiverEngine(applicationContext, targetMs, wifiMode, trackBursts, steer, align, silTrim, writeFrames, locationOff).also { it.start() }
             goForeground("Receiving, target $targetMs ms, Wi-Fi $wifiMode")
         } catch (e: Exception) {
             Log.e(TAG, "VCX-START failed: $e", e)
             engine = null
             releaseLocks()
+            locationGuard.restore("start failed")
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
@@ -103,8 +114,16 @@ class ReceiverService : Service() {
 
     override fun onDestroy() {
         shutdown()
+        locationGuard.restore("destroy")
         current = null
         super.onDestroy()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Swiping the UI away does not stop the stream, so Location stays off (restoring it would bring
+        // the Wi-Fi scans back). Restore only if nothing is streaming any more.
+        locationGuard.recoverIfNeeded(streaming = engine != null)
+        super.onTaskRemoved(rootIntent)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
