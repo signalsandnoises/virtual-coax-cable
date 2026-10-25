@@ -323,6 +323,14 @@ service, fixed jitter buffer, AudioTrack fast track, 384-frame track buffer), pr
 - **Best setting so far: target 40, track_bursts 6.** That is about -11 to -14 ms vs the wired path, clean
   except for scan meltdowns. tb4 underruns; t30 is too tight while scans happen.
 
+- `20261025-100841` (10 min soak, t40, tb6, screen off, **Location off** via `settings put secure
+  location_mode 0`; Wi-Fi scanning under Location was already off): -12.3 ms, 5 dropouts (one 150 ms,
+  the rest 1-18 ms), 93 late, 1 underrun. **No location scans during the soak** (none logged), so Location
+  off does stop the geofence scan bursts. But there was still one 184 ms stall at 10:17:16, while a Samsung
+  `SilentRoamingManager` PNO scheduled scan was active (started when the screen locked at 10:08:25,
+  stopped 10:17:56; firmware scans aren't logged individually). Location was restored to on (mode 3)
+  afterwards. Takeaway: Location off helps, and Samsung's screen-off roaming scans are the next suspect.
+
 **Paused 2026-10-25.** Options: (1) PC hotspot direct link, (2) check the Samsung Wi-Fi settings above,
 (3) accept roughly 150 ms+ latency, with our app or WFAS. To resume: the phone is on Verma, wireless
 debugging is likely off, and the PC's Wi-Fi is on Verma while its Ethernet stays on Verma2.
