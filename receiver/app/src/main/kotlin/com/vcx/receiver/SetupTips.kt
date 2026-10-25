@@ -70,6 +70,15 @@ object SetupTips {
 
     fun tips(c: Context, locationOffEnabled: Boolean): List<Tip> {
         val list = ArrayList<Tip>()
+        if (LocalNetwork.required()) {
+            val ok = LocalNetwork.granted(c)
+            list += Tip(
+                "Local network access",
+                if (ok) "Allowed." else "Needed to receive audio from your PC on the local network.",
+                if (ok) State.OK else State.WARN,
+                if (ok) null else "Allow",
+            ) { ctx -> if (ctx is android.app.Activity) LocalNetwork.request(ctx) else LocalNetwork.openAppSettings(ctx) }
+        }
         if (locationOffEnabled) {
             val granted = hasSecureSettingsPermission(c)
             list += Tip(

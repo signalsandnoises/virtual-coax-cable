@@ -51,6 +51,8 @@ class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private var demo = false
     private var demoHiccup = false
+    /** Play was pressed without the local network permission; start once it is granted. */
+    private var startAfterGrant = false
     private val hubListener = Runnable { render() }
     private val tick = object : Runnable {
         override fun run() { render(); handler.postDelayed(this, 1000) }
@@ -67,11 +69,13 @@ class MainActivity : Activity() {
 
         if (savedInstanceState == null) {
             handleLaunchExtras(intent)
+            val ask = ArrayList<String>()
+            if (!LocalNetwork.granted(this)) ask += LocalNetwork.PERMISSION
             if (Build.VERSION.SDK_INT >= 33 &&
                 checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-            ) {
-                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
-            }
+            ) ask += Manifest.permission.POST_NOTIFICATIONS
+            if (LocalNetwork.PERMISSION in ask) LocalNetwork.markAsked(this)
+            if (ask.isNotEmpty()) requestPermissions(ask.toTypedArray(), 1)
         }
     }
 
@@ -124,7 +128,8 @@ class MainActivity : Activity() {
             setPadding(pad, v, pad, v)
             minHeight = Ui.dp(context, 48f)
             setOnClickListener {
-                startActivity(Intent(this@MainActivity, SettingsActivity::class.java).putExtra(SettingsActivity.EXTRA_SCROLL_TO, "tips"))
+                if (!LocalNetwork.granted(this@MainActivity)) LocalNetwork.request(this@MainActivity)
+                else startActivity(Intent(this@MainActivity, SettingsActivity::class.java).putExtra(SettingsActivity.EXTRA_SCROLL_TO, "tips"))
             }
         }
         val texts = LinearLayout(this).apply {
@@ -182,7 +187,23 @@ class MainActivity : Activity() {
     private fun onToggle() {
         if (demo) { demo = false; demoHiccup = false; PlayerHub.addListener(hubListener); render(); return }
         val playing = PlayerHub.latest?.running == true || ReceiverService.isStreaming()
+        if (!playing && !LocalNetwork.granted(this)) {
+            startAfterGrant = true
+            LocalNetwork.request(this)
+            return
+        }
         ReceiverService.send(this, if (playing) ReceiverService.ACTION_STOP else ReceiverService.ACTION_START)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == LocalNetwork.REQUEST_CODE && startAfterGrant && LocalNetwork.granted(this) &&
+            !ReceiverService.isStreaming()
+        ) {
+            ReceiverService.send(this, ReceiverService.ACTION_START)
+        }
+        startAfterGrant = false
+        render()
     }
 
     private fun wifiConnected(): Boolean {
@@ -212,7 +233,9 @@ class MainActivity : Activity() {
             PlayStatus.HICCUP -> PlayButtonView.Look.HICCUP
             PlayStatus.NO_WIFI -> PlayButtonView.Look.WARN
         }
-        status.text = ui.title
+        val lanBlocked = !demo && !LocalNetwork.granted(this)
+        if (lanBlocked) button.look = PlayButtonView.Look.WARN
+        status.text = if (lanBlocked) "Local network permission needed" else ui.title
         status.setTextColor(Ui.color(this, if (ui.status == PlayStatus.HICCUP) R.color.vcx_hiccup else R.color.vcx_on_surface))
         source.text = ui.source
         source.visibility = if (ui.source.isEmpty()) View.GONE else View.VISIBLE
@@ -221,6 +244,7 @@ class MainActivity : Activity() {
         val vol = SetupTips.mediaVolume(this)
         val tipCount = SetupTips.warningCount(this, settings.locationOff)
         hint.text = when {
+            lanBlocked -> "Needed to receive audio from your PC · tap to allow"
             vol <= 0.05f -> "Media volume is muted"
             vol < 0.3f -> "Media volume is low (${(vol * 100).toInt()}%)"
             tipCount > 0 -> "$tipCount setup tip${if (tipCount > 1) "s" else ""} · tap to review"

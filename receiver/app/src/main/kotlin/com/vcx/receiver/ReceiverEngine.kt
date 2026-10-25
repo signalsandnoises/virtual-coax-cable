@@ -121,8 +121,9 @@ class ReceiverEngine(
                 "pc=${allowedIp ?: "auto"} output=${output.preferredResult} " +
                 "track_capacity=${output.capacityFrames} min_buffer_bytes=${output.minBufferBytes} " +
                 "fast_track=${output.isFastTrack} native_rate=${output.nativeSampleRate} " +
-                "rcvbuf=${audioSocket.receiveBufferSize}",
+                "rcvbuf=${audioSocket.receiveBufferSize} local_network=${LocalNetwork.state(context)}",
         )
+        Log.i(TAG, "VCX-PERM local_network=${LocalNetwork.state(context)}")
 
         running = true
         threads += Thread(::playoutLoop, "vcx-playout")
@@ -294,7 +295,7 @@ class ReceiverEngine(
                 discoverySocket.send(DatagramPacket(reply, reply.size, dp.socketAddress))
                 Log.i(TAG, "VCX-DISCOVER from=${dp.socketAddress} pc_name=\"$pcName\" replied model=${Build.MODEL}")
             } catch (e: Exception) {
-                Log.w(TAG, "discovery reply to ${dp.socketAddress} failed: $e")
+                logSendError("discovery reply to ${dp.socketAddress}", e)
             }
         }
     }
@@ -416,8 +417,20 @@ class ReceiverEngine(
         try {
             audioSocket.send(DatagramPacket(bytes, bytes.size, dst))
         } catch (e: Exception) {
-            Log.w(TAG, "stats send to $dst failed: $e")
+            logSendError("stats send to $dst", e)
         }
+    }
+
+    @Volatile private var lastSendErrorMs = 0L
+    @Volatile private var suppressedSendErrors = 0
+
+    /** Send failures (EPERM without the local network permission, ENETUNREACH) at most once per 10 s. */
+    private fun logSendError(what: String, e: Exception) {
+        val now = SystemClock.elapsedRealtime()
+        if (lastSendErrorMs != 0L && now - lastSendErrorMs < 10_000) { suppressedSendErrors++; return }
+        Log.w(TAG, "VCX-SENDERR $what failed: $e (+$suppressedSendErrors suppressed) local_network=${LocalNetwork.state(context)}")
+        lastSendErrorMs = now
+        suppressedSendErrors = 0
     }
 
     private companion object {
