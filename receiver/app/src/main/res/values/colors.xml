@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Material You (dynamic) colors from the system palette, API 31+. -->
+<resources>
+    <color name="vcx_primary">@android:color/system_accent1_600</color>
+    <color name="vcx_on_primary">@android:color/system_accent1_0</color>
+    <color name="vcx_primary_container">@android:color/system_accent1_100</color>
+    <color name="vcx_on_primary_container">@android:color/system_accent1_900</color>
+    <color name="vcx_surface">@android:color/system_neutral1_10</color>
+    <color name="vcx_on_surface">@android:color/system_neutral1_900</color>
+    <color name="vcx_on_surface_variant">@android:color/system_neutral2_700</color>
+    <color name="vcx_surface_container">@android:color/system_neutral2_50</color>
+    <color name="vcx_outline">@android:color/system_neutral2_400</color>
+    <color name="vcx_warn">#B3261E</color>
+    <color name="vcx_ok">#1E7A3C</color>
+    <color name="vcx_hiccup">#C77700</color>
+    <color name="vcx_launcher_bg">#1B3A5C</color>
+</resources>

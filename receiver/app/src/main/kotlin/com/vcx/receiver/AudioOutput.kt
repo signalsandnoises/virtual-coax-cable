@@ -13,13 +13,15 @@ import com.vcx.receiver.core.Vcx
  * Buffer sizing: build with 2x getMinBufferSize (or more if needed to hold the target), then
  * setBufferSizeInFrames(burst * trackBursts), where burst = PROPERTY_OUTPUT_FRAMES_PER_BUFFER.
  */
-class AudioOutput(context: Context, trackBursts: Int) {
+class AudioOutput(context: Context, trackBursts: Int, preferredDeviceKey: String? = null) {
 
     val burstFrames: Int
     val nativeSampleRate: Int
     val minBufferBytes: Int
     val requestedFrames: Int
     val track: AudioTrack
+    /** "default", "ok:<label>" or "not_found:<key>" (for the VCX-START line). */
+    val preferredResult: String
 
     init {
         val am = context.getSystemService(AudioManager::class.java)
@@ -51,6 +53,14 @@ class AudioOutput(context: Context, trackBursts: Int) {
             .setBufferSizeInBytes(buildBytes)
             .build()
         track.setBufferSizeInFrames(requestedFrames)
+        preferredResult = if (preferredDeviceKey == null) "default" else {
+            val dev = OutputDevices.find(context, preferredDeviceKey)
+            when {
+                dev == null -> "not_found:$preferredDeviceKey"
+                track.setPreferredDevice(dev) -> "ok:${OutputDevices.key(dev)}"
+                else -> "rejected:$preferredDeviceKey"
+            }
+        }
     }
 
     /** Actual buffer size after setBufferSizeInFrames (the device may round or clamp it). */

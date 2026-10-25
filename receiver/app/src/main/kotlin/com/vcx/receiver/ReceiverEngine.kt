@@ -10,6 +10,8 @@ import android.os.SystemClock
 import android.util.Log
 import com.vcx.receiver.core.AudioPacket
 import com.vcx.receiver.core.DelayStats
+import com.vcx.receiver.core.EffectiveConfig
+import com.vcx.receiver.core.EngineSnapshot
 import com.vcx.receiver.core.JitterBuffer
 import com.vcx.receiver.core.PacketCodec
 import com.vcx.receiver.core.PlayoutChain
@@ -39,17 +41,29 @@ const val TAG = "VCX"
  */
 class ReceiverEngine(
     private val context: Context,
-    val targetMs: Int,
-    val wifiMode: String,
-    val trackBursts: Int,
-    val steer: Boolean,
-    val align: Boolean,
-    val silTrim: Boolean,
-    /** Frames per AudioTrack write; 0 = one HAL burst. */
-    private val writeFramesRequested: Int = 0,
-    /** Only for the VCX-START line; LocationGuard (in the service) does the work. */
-    private val locationOff: Boolean = false,
+    val cfg: EffectiveConfig,
+    /** Called once a second from the stats thread. */
+    private val onSnapshot: (EngineSnapshot) -> Unit = {},
+    /** Called when a sender is seen (DISCOVER or first AUDIO); not on the per-packet path. */
+    private val onSender: (ip: String, name: String?) -> Unit = { _, _ -> },
 ) {
+    val targetMs = cfg.targetMs
+    val wifiMode = cfg.wifiMode
+    val trackBursts = cfg.trackBursts
+    val steer = cfg.steer
+    val align = cfg.align
+    val silTrim = cfg.silTrim
+    /** Frames per AudioTrack write; 0 = one HAL burst. */
+    private val writeFramesRequested = cfg.writeFrames
+    /** Only for the VCX-START line; LocationGuard (in the service) does the work. */
+    private val locationOff = cfg.locationOff
+    /** Only accept this sender (PC selection); null = any. */
+    private val allowedIp = cfg.pcIp
+    @Volatile var senderIp: String? = null
+        private set
+    private val pcNames = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val ignoredDiscoverFrom = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<String, Boolean>())
+    @Volatile private var ignoredPackets = 0L
     @Volatile private var running = false
     @Volatile private var lastSource: SocketAddress? = null
     @Volatile var statusLine: String = "starting"
@@ -77,7 +91,7 @@ class ReceiverEngine(
     @Volatile private var playoutTid = 0
 
     fun start() {
-        output = AudioOutput(context, trackBursts)
+        output = AudioOutput(context, trackBursts, cfg.outputDevice)
         writeFrames = if (writeFramesRequested > 0) writeFramesRequested.coerceIn(16, Vcx.MAX_FRAMES_PER_PACKET)
         else output.burstFrames
         try {
@@ -104,6 +118,7 @@ class ReceiverEngine(
                 "burst_frames=${output.burstFrames} sample_rate=${Vcx.SAMPLE_RATE} track_bursts=$trackBursts " +
                 "write_frames=$writeFrames steer=${if (steer) 1 else 0} align=${if (align) 1 else 0} " +
                 "siltrim=${if (silTrim) 1 else 0} location_off=${if (locationOff) 1 else 0} transfer_mode=stream " +
+                "pc=${allowedIp ?: "auto"} output=${output.preferredResult} " +
                 "track_capacity=${output.capacityFrames} min_buffer_bytes=${output.minBufferBytes} " +
                 "fast_track=${output.isFastTrack} native_rate=${output.nativeSampleRate} " +
                 "rcvbuf=${audioSocket.receiveBufferSize}",
@@ -229,6 +244,13 @@ class ReceiverEngine(
             }
             lastRxMs = SystemClock.elapsedRealtime()
             if (!audioSocket.isConnected) {
+                val addr = dp.address?.hostAddress
+                if (allowedIp != null && addr != allowedIp) {
+                    ignoredPackets++ // PC selection: not the chosen sender
+                    continue
+                }
+                senderIp = addr
+                if (addr != null) onSender(addr, pcNames[addr])
                 // Once per sender: connecting lets libcore skip the per-receive source-address allocation.
                 val src = dp.socketAddress
                 lastSource = src
@@ -258,6 +280,15 @@ class ReceiverEngine(
                 continue
             }
             val pcName = PacketCodec.parseDiscover(buf, 0, dp.length) ?: continue
+            val ip = dp.address?.hostAddress
+            if (ip != null) {
+                if (pcName.isNotBlank()) pcNames[ip] = pcName
+                onSender(ip, pcName.ifBlank { null })
+            }
+            if (allowedIp != null && ip != allowedIp) {
+                if (ip != null && ignoredDiscoverFrom.add(ip)) Log.i(TAG, "VCX-DISCOVER ignored from $ip (pc=$allowedIp)")
+                continue
+            }
             val reply = PacketCodec.buildDiscoverReply(replySeq++, clock.nowUs(), Vcx.AUDIO_PORT, Build.MODEL)
             try {
                 discoverySocket.send(DatagramPacket(reply, reply.size, dp.socketAddress))
@@ -358,6 +389,13 @@ class ReceiverEngine(
             gapMaxMs = delay.gapMaxMs,
             depthMinMs = chain.takeDepthMinMs(),
         )
+        onSnapshot(
+            EngineSnapshot(
+                running = true, primed = c.primed, received = c.received, lost = c.lost, late = c.late,
+                concealed = c.concealed, bufferMs = chain.depthUs() / 1000.0, targetMs = targetMs,
+                sender = senderIp, pcName = senderIp?.let { pcNames[it] }, underruns = snap.underruns,
+            ),
+        )
         val line = StatsFormat.logLine(snap)
         Log.i(TAG, line)
         statusLine = line.removePrefix("VCX-STATS ")
@@ -365,7 +403,7 @@ class ReceiverEngine(
 
         val extra = "VCX-EXTRA dup=${c.duplicates} caps=${c.caps} capped_packets=${c.cappedPackets} " +
             "align_dropped=${c.alignDropped} align_inserted=${c.alignInserted} rebuffers=${c.rebuffers} " +
-            "resyncs=${c.resyncs} bad=$badPackets max_k=${c.maxK} sil_dropped=${c.silDropped} sil_inserted=${c.silInserted} " +
+            "resyncs=${c.resyncs} bad=$badPackets ignored=$ignoredPackets max_k=${c.maxK} sil_dropped=${c.silDropped} sil_inserted=${c.silInserted} " +
             "primed=${c.primed} frames=${c.framesPerPacket}"
         if (extra != lastExtra) {
             Log.i(TAG, extra)

@@ -17,7 +17,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\VcxSender\VcxSender.csproj" />
+    <ProjectReference Include="..\VcxCore\VcxCore.csproj" />
   </ItemGroup>
 
 </Project>

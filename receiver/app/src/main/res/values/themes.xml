@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Vcx" parent="android:Theme.DeviceDefault.DayNight">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowBackground">@color/vcx_surface</item>
+        <item name="android:colorPrimary">@color/vcx_primary</item>
+        <item name="android:colorAccent">@color/vcx_primary</item>
+        <item name="android:colorControlActivated">@color/vcx_primary</item>
+        <item name="android:textColorPrimary">@color/vcx_on_surface</item>
+        <item name="android:textColorSecondary">@color/vcx_on_surface_variant</item>
+        <item name="android:windowLightStatusBar">@bool/vcx_light_bars</item>
+        <item name="android:windowLightNavigationBar">@bool/vcx_light_bars</item>
+    </style>
+</resources>

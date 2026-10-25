@@ -34,6 +34,8 @@ public sealed class SenderStats
 /// Owns the capture thread (MMCSS "Pro Audio"): waits on the WASAPI event, a high-resolution waitable timer
 /// and a 2 ms poll fallback; converts float32 → s16; hands chunks to <see cref="StreamCore"/>, which decides
 /// what is sent (exact captured frames, discontinuity fill, idle silence fill, resume trim).
+/// Follows default-device changes (IMMNotificationClient) and re-opens capture after errors every 2 s,
+/// with silence fill keeping the stream alive meanwhile.
 /// </summary>
 public sealed class StreamEngine
 {
@@ -49,12 +51,18 @@ public sealed class StreamEngine
     private volatile bool _stop;
     private readonly ManualResetEventSlim _initDone = new(false);
     private Exception? _initError;
+    private bool _requireCapture = true;
     private StreamCore? _core;
+    private volatile string? _captureError;
+    private volatile string? _deviceName;
+    private volatile string? _deviceFormat;
 
     public SenderStats Stats { get; } = new();
     public StreamCore? Core => _core;
-    public string? DeviceName { get; private set; }
-    public string? DeviceFormat { get; private set; }
+    public string? DeviceName => _deviceName;
+    public string? DeviceFormat => _deviceFormat;
+    /// <summary>Null while capture is open; otherwise why it is not (unsupported mix format, no device, ...).</summary>
+    public string? CaptureError => _captureError;
     public bool MmcssEnabled { get; private set; }
     public bool HighResTimer { get; private set; }
 
@@ -67,9 +75,13 @@ public sealed class StreamEngine
         _send = send;
     }
 
-    /// <summary>Starts the capture thread and waits until the capture device is open. Throws if it can't be opened.</summary>
-    public void Start()
+    /// <summary>
+    /// Starts the capture thread and waits until the capture device is open. With <paramref name="requireCapture"/>
+    /// it throws if capture can't be opened; otherwise it keeps running (silence fill) with <see cref="CaptureError"/> set.
+    /// </summary>
+    public void Start(bool requireCapture = true)
     {
+        _requireCapture = requireCapture;
         _thread = new Thread(Run) { Name = "vcx-capture", IsBackground = true, Priority = ThreadPriority.Highest };
         _thread.SetApartmentState(ApartmentState.MTA);
         _thread.Start();
@@ -89,11 +101,37 @@ public sealed class StreamEngine
 
     private byte[] _s16 = new byte[8192];
 
+    private void SetCaptureError(string? error)
+    {
+        if (error == _captureError) return;
+        _captureError = error;
+        if (error != null) _log($"capture unavailable: {error}");
+    }
+
+    private LoopbackCapture OpenCapture()
+    {
+        try
+        {
+            var cap = new LoopbackCapture();
+            _deviceName = cap.DeviceName;
+            _deviceFormat = cap.FormatDescription;
+            SetCaptureError(null);
+            return cap;
+        }
+        catch (Exception ex)
+        {
+            SetCaptureError(ex is UnsupportedFormatException ? ex.Message : $"{ex.GetType().Name}: {ex.Message}");
+            throw;
+        }
+    }
+
     private void Run()
     {
         IntPtr avrt = IntPtr.Zero;
         LoopbackCapture? cap = null;
         HighResTimer? timer = null;
+        NAudio.CoreAudioApi.MMDeviceEnumerator? notifyEnum = null;
+        var watcher = new DefaultDeviceWatcher();
         try
         {
             uint taskIndex = 0;
@@ -108,9 +146,26 @@ public sealed class StreamEngine
             timer = new HighResTimer();
             HighResTimer = timer.IsHighResolution;
 
-            cap = new LoopbackCapture();
-            DeviceName = cap.DeviceName;
-            DeviceFormat = cap.FormatDescription;
+            try
+            {
+                cap = OpenCapture();
+            }
+            catch when (!_requireCapture)
+            {
+                cap = null; // keep going with silence fill; Loop retries
+            }
+
+            try
+            {
+                notifyEnum = new NAudio.CoreAudioApi.MMDeviceEnumerator();
+                notifyEnum.RegisterEndpointNotificationCallback(watcher);
+            }
+            catch (Exception ex)
+            {
+                _log($"default-device notifications unavailable: {ex.Message}");
+                notifyEnum?.Dispose();
+                notifyEnum = null;
+            }
         }
         catch (Exception ex)
         {
@@ -135,24 +190,30 @@ public sealed class StreamEngine
 
         try
         {
-            Loop(ref cap, timer!);
+            Loop(ref cap, timer!, watcher);
         }
         catch (Exception ex)
         {
             _log($"capture thread crashed: {ex}");
+            SetCaptureError($"capture thread crashed: {ex.Message}");
         }
         finally
         {
+            if (notifyEnum != null)
+            {
+                try { notifyEnum.UnregisterEndpointNotificationCallback(watcher); } catch { /* ignore */ }
+                notifyEnum.Dispose();
+            }
             cap?.Dispose();
             timer!.Dispose();
             if (avrt != IntPtr.Zero) Native.AvRevertMmThreadCharacteristics(avrt);
         }
     }
 
-    private void Loop(ref LoopbackCapture? cap, HighResTimer timer)
+    private void Loop(ref LoopbackCapture? cap, HighResTimer timer, DefaultDeviceWatcher watcher)
     {
         var core = _core!;
-        double nextRetryUs = 0;
+        double nextRetryUs = cap == null ? QpcClock.NowUs() + CaptureRetryUs : 0;
         var handles1 = new IntPtr[1];
         var handles2 = new IntPtr[2];
 
@@ -171,6 +232,14 @@ public sealed class StreamEngine
                 uint r = Native.WaitForMultipleObjects((uint)h.Length, h, false, 50);
                 if (r == Native.WAIT_FAILED)
                     throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "WaitForMultipleObjects failed");
+            }
+
+            if (watcher.TakeChanged() && (cap == null || cap.DeviceId != watcher.LastDefaultId))
+            {
+                _log($"default playback device changed (was '{cap?.DeviceName ?? "none"}'); reopening loopback capture");
+                cap?.Dispose();
+                cap = null;
+                nextRetryUs = 0; // reopen right away below
             }
 
             if (cap != null)
@@ -197,13 +266,13 @@ public sealed class StreamEngine
             {
                 try
                 {
-                    cap = new LoopbackCapture();
+                    cap = OpenCapture();
                     core.ResetCapturePosition();
-                    _log($"capture reopened: {cap.DeviceName} ({cap.FormatDescription})");
+                    _log($"capture opened: {cap.DeviceName} ({cap.FormatDescription})");
                 }
                 catch (Exception ex)
                 {
-                    if (_verbose) _log($"capture reopen failed: {ex.Message}");
+                    if (_verbose) _log($"capture open failed: {ex.Message}");
                     nextRetryUs = QpcClock.NowUs() + CaptureRetryUs;
                 }
             }

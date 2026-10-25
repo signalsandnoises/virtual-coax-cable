@@ -27,22 +27,56 @@ $s = '<serial>'   # e.g. 10.0.0.202:43635 (see: & $adb mdns services)
 & $adb -s $s shell pm grant com.vcx.receiver android.permission.WRITE_SECURE_SETTINGS  # lets the app switch Location off while streaming
 
 # Start (or restart with new settings). Extras are optional; defaults shown.
-& $adb -s $s shell am start-foreground-service -n com.vcx.receiver/.ReceiverService -a com.vcx.receiver.START --ei target_ms 40 --es wifi_mode low_latency --ei track_bursts 2 --ei steer 1 --ei align 1 --ei siltrim 1 --ei write_frames 0 --ei location_off 1
+& $adb -s $s shell am start-foreground-service -n com.vcx.receiver/.ReceiverService -a com.vcx.receiver.START --ei target_ms 40 --es wifi_mode low_latency --ei track_bursts 6 --ei steer 1 --ei align 1 --ei siltrim 1 --ei write_frames 0 --ei location_off 1
 
 # Stop (stops playout, releases the Wi-Fi/wake locks, stops the service)
 & $adb -s $s shell am start-foreground-service -n com.vcx.receiver/.ReceiverService -a com.vcx.receiver.STOP
 ```
 
+Extras are optional: an absent extra uses the value saved in the app's Settings (defaults below);
+a present extra overrides it for that run only. `-a com.vcx.receiver.TOGGLE` toggles play/pause.
+
 | Extra | Values | Meaning |
 |---|---|---|
 | `target_ms` | 5..1000, default 40 | Jitter buffer target depth (rounded up to whole packets) |
 | `wifi_mode` | `low_latency` (default), `high_perf`, `none` | WifiLock mode held while running |
-| `track_bursts` | 1..32, default 2 | AudioTrack buffer = this many HAL bursts (`PROPERTY_OUTPUT_FRAMES_PER_BUFFER`) |
+| `track_bursts` | 1..32, default 6 | AudioTrack buffer = this many HAL bursts (`PROPERTY_OUTPUT_FRAMES_PER_BUFFER`) |
 | `steer` | 0/1, default 1 | Depth steering by resampling (0 = ratio fixed at 0 ppm, for A/B tests) |
 | `align` | 0/1, default 1 | One-time start-up alignment (drop/insert whole packets ~300 ms after priming) |
 | `siltrim` | 0/1, default 1 | Drop/insert whole silent packets when lead is > 5 ms off target |
 | `location_off` | 0/1, default 1 | Switch Location off while streaming, restore it afterwards (needs WRITE_SECURE_SETTINGS) |
 | `write_frames` | 0 or 16..4800, default 0 = one HAL burst | Frames per blocking AudioTrack write (pulled through the resampler; the jitter buffer stays in 120-frame packets) |
+| `pc` | `auto` or an IP | Only accept (and answer DISCOVER from) this sender |
+| `output_device` | `default` or `type:productName` | Preferred output device (AudioTrack.setPreferredDevice) |
+| `stop_on_unplug` | 0/1, default 1 | Stop when the output is unplugged (ACTION_AUDIO_BECOMING_NOISY) |
+
+## App UI (milestone 4)
+
+- **Main screen:** a giant play/pause button (ring: green playing, amber Wi-Fi hiccup, red no Wi-Fi).
+  Below it: status (Idle / Waiting for PC… / Playing / Wi-Fi hiccup / No Wi-Fi), the PC we receive
+  from, a stats line (buffer, target, lost/late in the last minute) and a hint line (low media volume
+  or "N setup tips"). The gear opens Settings. Works in portrait and landscape, light and dark, with
+  Material You colours.
+- **Settings:** buffer target slider (20-120 ms), audio buffer size (track_bursts), Wi-Fi mode,
+  Location off while playing (shows whether WRITE_SECURE_SETTINGS is granted, the adb command and a
+  Copy button), PC (Any PC or the last-seen senders), output device, Wi-Fi tips, behaviour
+  (stop on unplug, keep screen on), advanced (steer/align/siltrim, reset). Saved immediately in
+  SharedPreferences and used at the next play.
+- **Notification / lock screen:** MediaStyle notification with Pause, backed by a MediaSession;
+  headset and Bluetooth play/pause buttons work while playing, and via `MediaButtonReceiver` after a pause.
+- **Quick Settings tile:** "VCX Receiver", tap to play/pause (add it from the QS edit panel).
+- The service owns playback; the UI, tile and notification observe `PlayerHub` (published once a
+  second), so rotation and re-opening show the right state.
+
+Debug builds only, for screenshots:
+
+```powershell
+& $adb -s $s shell am start -n com.vcx.receiver/.MainActivity                         # main screen
+& $adb -s $s shell am start -n com.vcx.receiver/.MainActivity --ez demo_playing true  # fake "Playing"
+& $adb -s $s shell am start -n com.vcx.receiver/.MainActivity --es screen settings    # Settings
+& $adb -s $s shell am start -n com.vcx.receiver/.MainActivity --es screen tips        # Settings, scrolled to Wi-Fi tips
+& $adb -s $s exec-out screencap -p > shot.png
+```
 
 ## How latency is held (milestone 2)
 
@@ -123,3 +157,12 @@ from recents does not stop the stream and leaves Location off.
 - Logs: `VCX-LOCATION off (was mode=3, via=secure_setting, verified=true)`,
   `VCX-LOCATION restored mode=3 via=secure_setting verified=true (stop)`, or
   `VCX-LOCATION skipped: no WRITE_SECURE_SETTINGS` (streaming continues normally).
+
+## Setup tips (read-only)
+
+Settings › Wi-Fi tips checks, and links to the right system screen for:
+battery optimization (offers the system "allow unrestricted" prompt), Samsung Wi-Fi power saving
+(`wifi_power_save`), Switch to better Wi-Fi (`sem_wifi_switch_to_better_wifi_enabled`), Wi-Fi
+scanning (`wifi_scan_always_enabled`), Bluetooth scanning (`ble_scan_always_enabled`) and nearby
+device scanning (`nearby_scanning_enabled`). The app never changes these. Android 12+ blocks apps
+from reading some vendor keys; those show as "?" (check manually).

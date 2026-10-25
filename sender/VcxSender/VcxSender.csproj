@@ -8,7 +8,6 @@
     <RootNamespace>Vcx.Sender</RootNamespace>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <InvariantGlobalization>true</InvariantGlobalization>
     <ServerGarbageCollector>false</ServerGarbageCollector>
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
@@ -16,7 +15,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
+    <ProjectReference Include="..\VcxCore\VcxCore.csproj" />
   </ItemGroup>
 
 </Project>

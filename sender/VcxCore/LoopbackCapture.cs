@@ -5,6 +5,27 @@ namespace Vcx.Sender;
 
 public sealed class UnsupportedFormatException(string message) : Exception(message);
 
+/// <summary>Sets a flag when the default render device changes (IMMNotificationClient callbacks arrive on a COM thread).</summary>
+internal sealed class DefaultDeviceWatcher : NAudio.CoreAudioApi.Interfaces.IMMNotificationClient
+{
+    private volatile int _changed;
+    public string? LastDefaultId;
+
+    /// <summary>True once after the default render device (multimedia role) changed.</summary>
+    public bool TakeChanged() => Interlocked.Exchange(ref _changed, 0) != 0;
+
+    public void OnDefaultDeviceChanged(DataFlow flow, Role role, string defaultDeviceId)
+    {
+        if (flow != DataFlow.Render || role != Role.Multimedia) return;
+        LastDefaultId = defaultDeviceId;
+        _changed = 1;
+    }
+    public void OnDeviceStateChanged(string deviceId, DeviceState newState) { }
+    public void OnDeviceAdded(string pwstrDeviceId) { }
+    public void OnDeviceRemoved(string deviceId) { }
+    public void OnPropertyValueChanged(string pwstrDeviceId, PropertyKey key) { }
+}
+
 /// <summary>
 /// WASAPI shared-mode, event-driven loopback capture of the default render endpoint. Must be created,
 /// used and disposed on the same (MTA) thread: the capture thread.
@@ -20,6 +41,7 @@ internal sealed unsafe class LoopbackCapture : IDisposable
     private readonly EventWaitHandle _event = new(false, EventResetMode.AutoReset);
 
     public string DeviceName { get; }
+    public string DeviceId { get; }
     public string FormatDescription { get; }
     public IntPtr EventHandle => _event.SafeWaitHandle.DangerousGetHandle();
     public long DefaultPeriod100ns { get; }
@@ -35,6 +57,7 @@ internal sealed unsafe class LoopbackCapture : IDisposable
         {
             _device = _enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
             DeviceName = _device.FriendlyName;
+            DeviceId = _device.ID;
             _client = _device.AudioClient;
             var fmt = _client.MixFormat;
             FormatDescription = $"{fmt.SampleRate} Hz, {fmt.Channels} ch, {fmt.BitsPerSample}-bit {fmt.Encoding}";

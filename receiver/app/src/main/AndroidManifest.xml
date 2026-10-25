@@ -4,11 +4,13 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Development permission, granted once with
          adb shell pm grant com.vcx.receiver android.permission.WRITE_SECURE_SETTINGS
          Used by LocationGuard to switch Location off while streaming. -->
@@ -18,20 +20,28 @@
 
     <application
         android:allowBackup="false"
-        android:label="VCX Receiver"
-        android:theme="@android:style/Theme.DeviceDefault.DayNight">
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@style/Theme.Vcx">
 
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:parentActivityName=".MainActivity" />
+
         <!-- Exported so `adb shell am start-foreground-service -n ...` (shell uid) can reach it.
-             The intent-filter lists the two actions so explicit intents match under the
+             The intent-filter lists the actions so explicit intents match under the
              Android 15+ "safer intents" rules. -->
         <service
             android:name=".ReceiverService"
@@ -40,7 +50,32 @@
             <intent-filter>
                 <action android:name="com.vcx.receiver.START" />
                 <action android:name="com.vcx.receiver.STOP" />
+                <action android:name="com.vcx.receiver.TOGGLE" />
             </intent-filter>
         </service>
+
+        <!-- Quick Settings tile: play/pause. -->
+        <service
+            android:name=".VcxTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_stat_vcx"
+            android:label="@string/tile_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.TOGGLEABLE_TILE"
+                android:value="true" />
+        </service>
+
+        <!-- Headset / Bluetooth play button while paused (routed via MediaSession). -->
+        <receiver
+            android:name=".MediaButtonReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MEDIA_BUTTON" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
