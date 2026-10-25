@@ -231,8 +231,25 @@ All four runs are in `tools/results/` locally (not in git). Numbers are re-analy
 - WFAS is closed on the PC and not running on the phone.
 - Rig check with no phone stream (`20261024-232858`): in1 -33 dBFS, in2 silent, exit 2, as expected.
 
+### Milestone 1: minimal pipeline (2026-10-24), done
+
+`sender/` (C# console, WASAPI loopback, silence fill) and `receiver/` (Kotlin foreground
+service, fixed jitter buffer, AudioTrack fast track, 384-frame track buffer), protocol in `PROTOCOL.md`.
+
+- Broadcast discovery, audio and STATS feedback all work with **no inbound firewall rule**.
+  No `vcx` firewall rules were created. Nobody was at the PC, so a firewall prompt may or may not have appeared.
+- 400 packets/s, sender max gap 3 ms when idle and 11-20 ms when capturing (WASAPI delivers about every 10 ms).
+- **Every "lost" packet was late, not missing** (lost = late in all runs). So Wi-Fi jitter spikes exceed the
+  buffer, and redundancy alone won't fix this.
+- With no depth control, the buffer settles wherever start-up leaves it (70 ms at target 40, 57-80 ms at
+  target 20), so latency doesn't follow the target. The trim at target + 100 ms fired after Wi-Fi stalls and
+  caused the 207 ms skip in the first run.
+
 | Run folder | Build / setting | Settled latency (phone vs loop) | Dropouts | Slips after start-up |
 |---|---|---|---|---|
+| `20261024-234502` | M1, target 40, K=0, low_latency lock, screen on | -22.7 ms (p95 -11.0) | 19 (688 ms) | 2 (incl. 207 ms trim skip) |
+| `20261024-234603` | M1, target 30 (restarted service) | +25.4 ms | 5 (141 ms) | 0 |
+| `20261024-234643` | M1, target 20 (restarted service) | +15.8 ms (buffer sat at 57-80 ms) | 5 (172 ms) | 0 |
 
 ## If you are resuming this work after a context reset
 

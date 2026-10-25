@@ -474,6 +474,18 @@ def phone_log(serial, package, since):
     except (OSError, subprocess.SubprocessError) as e:
         out["error"] = str(e)
         return out
+    vcx = [dict(kv.split("=", 1) for kv in m.split()) for m in re.findall(r"VCX-STATS (.*)", text)]
+    if vcx:
+        # Our receiver: counters are cumulative, so report what changed during the run.
+        out["vcx"] = True
+        out["target_ms"] = sorted({float(s["target_ms"]) for s in vcx})
+        out["buffered_ms"] = [float(s["buf_ms"]) for s in vcx]
+        for key in ("rx", "lost", "recovered", "concealed", "late", "underruns"):
+            out[key] = int(vcx[-1][key]) - int(vcx[0][key])
+        out["underrun_lines"] = out["underruns"]
+        out["rate_ppm"] = [float(s["rate_ppm"]) for s in vcx]
+        out["track_frames"] = sorted({int(s["track_frames"]) for s in vcx})
+        return out
     playout = re.findall(r"\[PLAYOUT\] buffered=(\d+)ms target=(\d+)ms", text)
     out["target_ms"] = sorted({int(t) for _, t in playout})
     out["buffered_ms"] = [int(b) for b, _ in playout]
@@ -488,7 +500,12 @@ def print_phone(p):
     if "error" in p:
         print(f"  phone log: {p['error']}")
     elif not p["target_ms"]:
-        print("  phone log: no [PLAYOUT] lines during the run (stream not flowing, or a different build)")
+        print("  phone log: no VCX-STATS or [PLAYOUT] lines during the run (stream not flowing, or a different build)")
+    elif p.get("vcx"):
+        b = p["buffered_ms"]
+        print(f"  phone log: target {'/'.join(f'{t:g}' for t in p['target_ms'])} ms, buffer {min(b):.1f}-{max(b):.1f} ms, "
+              f"rx {p['rx']}, lost {p['lost']}, recovered {p['recovered']}, concealed {p['concealed']}, "
+              f"late {p['late']}, underruns {p['underruns']}, track {'/'.join(map(str, p['track_frames']))} frames")
     else:
         b = p["buffered_ms"]
         print(f"  phone log: playout target {'/'.join(map(str, p['target_ms']))} ms, buffered {min(b)}-{max(b)} ms, "
@@ -555,7 +572,8 @@ def main():
     ap.add_argument("--adb", metavar="SERIAL",
                     help="adb serial of the phone (e.g. 10.0.0.202:43635); records its playout target, buffer "
                          "level and underrun lines for each run")
-    ap.add_argument("--package", default="com.cuscus.wifiaudiostreaming", help="phone app package for --adb")
+    ap.add_argument("--package", default="com.vcx.receiver",
+                    help="phone app package for --adb (WFAS was com.cuscus.wifiaudiostreaming)")
     ap.add_argument("--analyze", metavar="WAV", help="analyze an existing recording instead of playing")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()

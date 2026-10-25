@@ -1,2 +1,12 @@
 tools/results/
 __pycache__/
+sender/**/bin/
+sender/**/obj/
+
+# Android receiver build outputs
+receiver/.gradle/
+receiver/.kotlin/
+receiver/build/
+receiver/app/build/
+receiver/local.properties
+receiver/.idea/
