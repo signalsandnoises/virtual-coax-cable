@@ -69,6 +69,10 @@ class ReceiverEngine(
     @Volatile var statusLine: String = "starting"
         private set
     @Volatile private var badPackets = 0L
+    /** Set on the first accepted AUDIO; until then DISCOVER replies claim the stream (Vcx.FLAG_CLAIM). */
+    @Volatile private var heardPc = false
+    private val loggedDiscoverFrom = java.util.Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<SocketAddress, Boolean>())
+    private var replySeq = 0
 
     private val jitter = JitterBuffer(targetMs, log = { Log.i(TAG, it) })
     private val delayStats = DelayStats()
@@ -130,6 +134,7 @@ class ReceiverEngine(
         threads += Thread(::receiveLoop, "vcx-rx")
         threads += Thread(::discoveryLoop, "vcx-discovery")
         threads += Thread(::statsLoop, "vcx-stats")
+        threads += Thread(::claimLoop, "vcx-claim")
         threads.forEach { it.start() }
     }
 
@@ -257,6 +262,7 @@ class ReceiverEngine(
                 lastSource = src
                 try {
                     audioSocket.connect(src)
+                    heardPc = true
                     Log.i(TAG, "VCX-RX connected to $src")
                 } catch (e: Exception) {
                     Log.w(TAG, "rx connect to $src failed: $e")
@@ -270,7 +276,6 @@ class ReceiverEngine(
     private fun discoveryLoop() {
         val buf = ByteArray(2048)
         val dp = DatagramPacket(buf, buf.size)
-        var replySeq = 0
         while (running) {
             dp.setLength(buf.size)
             try {
@@ -290,13 +295,43 @@ class ReceiverEngine(
                 if (ip != null && ignoredDiscoverFrom.add(ip)) Log.i(TAG, "VCX-DISCOVER ignored from $ip (pc=$allowedIp)")
                 continue
             }
-            val reply = PacketCodec.buildDiscoverReply(replySeq++, clock.nowUs(), Vcx.AUDIO_PORT, Build.MODEL)
-            try {
-                discoverySocket.send(DatagramPacket(reply, reply.size, dp.socketAddress))
-                Log.i(TAG, "VCX-DISCOVER from=${dp.socketAddress} pc_name=\"$pcName\" replied model=${Build.MODEL}")
-            } catch (e: Exception) {
-                logSendError("discovery reply to ${dp.socketAddress}", e)
+            val pc = dp.socketAddress
+            lastPcDiscover = pc
+            val claim = sendReply(pc)
+            // The PC re-sends DISCOVER every 2 s; log claims and each new PC endpoint only.
+            if (claim || loggedDiscoverFrom.add(pc)) {
+                Log.i(TAG, "VCX-DISCOVER from=$pc pc_name=\"$pcName\" replied model=${Build.MODEL} claim=${if (claim) 1 else 0}")
             }
+        }
+    }
+
+    /** DISCOVER_REPLY to [pc], claiming the stream while no audio has arrived. Returns the claim flag sent. */
+    private fun sendReply(pc: SocketAddress): Boolean {
+        val claim = !heardPc
+        val reply = synchronized(this) {
+            PacketCodec.buildDiscoverReply(replySeq++, clock.nowUs(), Vcx.AUDIO_PORT, Build.MODEL, if (claim) Vcx.FLAG_CLAIM else 0)
+        }
+        try {
+            discoverySocket.send(DatagramPacket(reply, reply.size, pc))
+        } catch (e: Exception) {
+            logSendError("discovery reply to $pc", e)
+        }
+        return claim
+    }
+
+    /**
+     * Right after Play, claim the stream from the PC we last heard a DISCOVER from (once a second for 5 s,
+     * until audio arrives). Windows Firewall lets this through while its flow to us is still open; otherwise
+     * the PC's 2 s unicast DISCOVER sweep picks the claim up from our reply.
+     */
+    private fun claimLoop() {
+        val pc = lastPcDiscover ?: return
+        if (allowedIp != null && (pc as? InetSocketAddress)?.address?.hostAddress != allowedIp) return
+        Log.i(TAG, "VCX-CLAIM to=$pc")
+        repeat(5) {
+            if (!running || heardPc) return
+            sendReply(pc)
+            try { Thread.sleep(1000) } catch (_: InterruptedException) { return }
         }
     }
 
@@ -433,7 +468,10 @@ class ReceiverEngine(
         suppressedSendErrors = 0
     }
 
-    private companion object {
-        val GC_KEYS = arrayOf("art.gc.gc-count", "art.gc.gc-time", "art.gc.blocking-gc-count", "art.gc.blocking-gc-time")
+    companion object {
+        /** Where the last DISCOVER came from (the PC's socket); survives engine restarts in this process. */
+        @Volatile private var lastPcDiscover: SocketAddress? = null
+
+        private val GC_KEYS = arrayOf("art.gc.gc-count", "art.gc.gc-time", "art.gc.blocking-gc-count", "art.gc.blocking-gc-time")
     }
 }

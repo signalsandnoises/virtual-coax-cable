@@ -20,6 +20,9 @@ public enum LinkState
 ///   it asks for a DISCOVER round every <see cref="DiscoverIntervalS"/> and keeps the current target.
 /// - A DISCOVER_REPLY while searching switches the target, if it matches the preferred device name (when set).
 /// - After a switch the new target gets a fresh grace period before searching resumes.
+/// - A claim (DISCOVER_REPLY with <see cref="Protocol.FlagClaim"/>: Play was just pressed on that phone) switches
+///   in any state, so the phone you last pressed Play on wins. Phones stop claiming once audio arrives, so two
+///   playing phones can't keep taking the stream from each other.
 /// </summary>
 public sealed class ReconnectMachine
 {
@@ -99,11 +102,12 @@ public sealed class ReconnectMachine
     }
 
     /// <summary>A DISCOVER_REPLY arrived. Returns true if the target switched to it.</summary>
-    public bool OnDiscoverReply(double now, IPEndPoint audioEndpoint, string name)
+    public bool OnDiscoverReply(double now, IPEndPoint audioEndpoint, string name, bool claim = false)
     {
-        if (State is not (LinkState.NoTarget or LinkState.Searching)) return false;
         if (PreferredName != null && !string.Equals(name, PreferredName, StringComparison.Ordinal)) return false;
         bool same = Target != null && Target.Equals(audioEndpoint);
+        if (claim && same && State is LinkState.Connected or LinkState.Waiting) return false;
+        if (!claim && State is not (LinkState.NoTarget or LinkState.Searching)) return false;
         Target = audioEndpoint;
         TargetName = name;
         _targetSince = now;

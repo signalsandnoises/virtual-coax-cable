@@ -27,3 +27,4 @@ Every setting or config change made while tuning the Wi-Fi audio link, with its 
 | 19 | Wireless debugging on hotspot network | Phone | Test setup only |
 | 20 | Tray app sender + app's new defaults | Both | 5/5 clean, −10.8 ms |
 | 21 | Local network permission (Android 17) | Phone app | Fixes S26 not connecting |
+| 22 | Play claims the stream (unicast discover + claim flag) | Both | Phone switch ~1 min → <0.5 s |

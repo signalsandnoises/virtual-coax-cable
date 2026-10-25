@@ -21,6 +21,8 @@ object Vcx {
     const val MAX_FRAMES_PER_PACKET = 4800 // 100 ms; sanity limit only
 
     const val FLAG_SILENCE_FILL = 1
+    /** DISCOVER_REPLY: Play was just pressed here and no audio has arrived yet; the PC switches to us. */
+    const val FLAG_CLAIM = 2
 
     const val AUDIO_PORT = 47800
     const val DISCOVERY_PORT = 47801
@@ -178,10 +180,10 @@ object PacketCodec {
         return out
     }
 
-    fun buildDiscoverReply(seq: Int, timestampUs: Long, audioPort: Int, deviceName: String): ByteArray {
+    fun buildDiscoverReply(seq: Int, timestampUs: Long, audioPort: Int, deviceName: String, flags: Int = 0): ByteArray {
         val name = deviceName.toByteArray(StandardCharsets.UTF_8)
         val out = ByteArray(Vcx.HEADER_SIZE + 2 + name.size)
-        writeHeader(out, 0, Vcx.TYPE_DISCOVER_REPLY, 0, seq, timestampUs, 0, 0, 0)
+        writeHeader(out, 0, Vcx.TYPE_DISCOVER_REPLY, flags, seq, timestampUs, 0, 0, 0)
         putU16(out, Vcx.HEADER_SIZE, audioPort)
         System.arraycopy(name, 0, out, Vcx.HEADER_SIZE + 2, name.size)
         return out

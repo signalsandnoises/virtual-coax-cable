@@ -24,8 +24,8 @@ public sealed class VcxLink : IDisposable
     private bool _disposed;
 
     public event Action<PhoneStats, IPEndPoint>? StatsReceived;
-    /// <summary>(audio endpoint = reply source IP + port from the reply body, device name)</summary>
-    public event Action<IPEndPoint, string>? DiscoverReplyReceived;
+    /// <summary>(audio endpoint = reply source IP + port from the reply body, device name, claim flag)</summary>
+    public event Action<IPEndPoint, string, bool>? DiscoverReplyReceived;
 
     public long SendErrors;
     public EndPoint? LocalEndPoint => _bound?.Socket.LocalEndPoint;
@@ -129,6 +129,50 @@ public sealed class VcxLink : IDisposable
         return list;
     }
 
+    /// <summary>
+    /// IPv4 neighbors (ARP table) on the subnets of up interfaces, e.g. phones on the Windows hotspot, which
+    /// keeps a permanent entry per connected client. A DISCOVER sent to them unicast is acked and retried by
+    /// Wi-Fi, unlike a broadcast, and their replies pass the firewall as responses on that flow.
+    /// </summary>
+    public static List<IPAddress> NeighborTargets(int max = 64)
+    {
+        var list = new List<IPAddress>();
+        var subnets = new List<(uint net, uint mask, uint self)>();
+        try
+        {
+            foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (ni.OperationalStatus != OperationalStatus.Up || ni.NetworkInterfaceType == NetworkInterfaceType.Loopback) continue;
+                foreach (var ua in ni.GetIPProperties().UnicastAddresses)
+                {
+                    if (ua.Address.AddressFamily != AddressFamily.InterNetwork || ua.IPv4Mask == null) continue;
+                    uint ip = ToUInt(ua.Address), mask = ToUInt(ua.IPv4Mask);
+                    if (mask == 0 || mask == uint.MaxValue) continue;
+                    subnets.Add((ip & mask, mask, ip));
+                }
+            }
+            foreach (var a in IpNetTable.Read())
+            {
+                uint v = ToUInt(a);
+                foreach (var (net, mask, self) in subnets)
+                {
+                    if ((v & mask) != net || v == self || v == net || v == (net | ~mask)) continue;
+                    if (!list.Contains(a)) list.Add(a);
+                    break;
+                }
+                if (list.Count >= max) break;
+            }
+        }
+        catch (Exception ex) when (ex is NetworkInformationException or DllNotFoundException or EntryPointNotFoundException) { }
+        return list;
+    }
+
+    private static uint ToUInt(IPAddress a)
+    {
+        var b = a.GetAddressBytes();
+        return (uint)(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]);
+    }
+
     private void ReceiveLoop(Bound b)
     {
         var buf = new byte[2048];
@@ -146,8 +190,8 @@ public sealed class VcxLink : IDisposable
             {
                 if (type == Protocol.TypeStats && Protocol.TryParseStats(pkt, out var st))
                     StatsReceived?.Invoke(st, src);
-                else if (type == Protocol.TypeDiscoverReply && Protocol.TryParseDiscoverReply(pkt, out ushort port, out string name))
-                    DiscoverReplyReceived?.Invoke(new IPEndPoint(src.Address, port), name.Length > 0 ? name : src.Address.ToString());
+                else if (type == Protocol.TypeDiscoverReply && Protocol.TryParseDiscoverReply(pkt, out ushort port, out string name, out bool claim))
+                    DiscoverReplyReceived?.Invoke(new IPEndPoint(src.Address, port), name.Length > 0 ? name : src.Address.ToString(), claim);
             }
             catch (Exception ex)
             {

@@ -13,6 +13,11 @@ The PC never listens on a fixed port. It uses **one** UDP socket bound to an eph
 everything (discover, audio, receiving replies), so every reply is a response on a flow the PC
 opened and needs no inbound firewall rule.
 
+While streaming, the PC also sends DISCOVER **unicast** every 2 s to each IPv4 neighbor in its ARP table on
+its local subnets (the Windows hotspot keeps one entry per connected client). Unicast Wi-Fi frames are acked
+and retried, unlike broadcasts, and the reply is a response on that flow, so it passes the firewall. Broadcast
+DISCOVER is still sent every 3 s while the PC has no answering phone.
+
 ## Common header (24 bytes)
 
 | Offset | Size | Field |
@@ -20,7 +25,7 @@ opened and needs no inbound firewall rule.
 | 0 | 4 | magic, ASCII `VCX1` |
 | 4 | 1 | version = 1 |
 | 5 | 1 | type: 1 AUDIO, 2 DISCOVER, 3 DISCOVER_REPLY, 4 STATS |
-| 6 | 2 | flags (AUDIO: bit 0 = payload is sender-generated silence fill) |
+| 6 | 2 | flags (AUDIO: bit 0 = payload is sender-generated silence fill; DISCOVER_REPLY: bit 1 = claim) |
 | 8 | 4 | seq u32 (AUDIO: +1 per packet, wraps; others: 0 or a counter) |
 | 12 | 8 | sender timestamp u64, microseconds (PC: QPC-based; phone: elapsedRealtimeNanos/1000) |
 | 20 | 2 | frames per payload u16 (AUDIO; default 120 = 2.5 ms) |
@@ -41,6 +46,12 @@ Body: UTF-8 PC name (may be empty).
 ## DISCOVER_REPLY (type 3), phone:47801 → PC source address
 
 Body: u16 audio port (47800), then UTF-8 device name (e.g. `SM-S911U1`).
+
+**Claim (flag bit 1).** From Play until its first AUDIO packet, the phone sets the claim flag on every reply,
+and also sends a few unsolicited claims (1/s for 5 s) to the PC socket it last heard a DISCOVER from. The PC
+switches to a claiming phone in any state, so the phone where Play was pressed last wins. A phone never
+claims after audio has arrived in that play session, so two playing phones can't take turns stealing the
+stream. A PC pinned to one device name (Device mode) ignores claims from other names.
 
 ## STATS (type 4), phone:47800 → PC source address of the last AUDIO packet, about once a second
 

@@ -170,6 +170,32 @@ public class ReconnectTests
     }
 
     [Fact]
+    public void Claim_SwitchesEvenWhileConnected_PlainReplyDoesNot()
+    {
+        var rm = new ReconnectMachine(0, A, "phone-a", null);
+        Assert.True(rm.OnStats(1, A));
+        Assert.False(rm.OnDiscoverReply(2, B, "phone-b"));             // plain reply: keep A
+        Assert.Equal(A, rm.Target);
+        Assert.True(rm.OnDiscoverReply(2.1, B, "phone-b", claim: true)); // Play pressed on B
+        Assert.Equal(B, rm.Target);
+        Assert.Equal("phone-b", rm.TargetName);
+        Assert.Equal(LinkState.Waiting, rm.State);
+        Assert.False(rm.OnStats(2.2, A));                               // A's late STATS don't count
+        Assert.True(rm.OnStats(2.5, B));
+        Assert.False(rm.OnDiscoverReply(3, B, "phone-b", claim: true)); // repeat claim from the target: no-op
+        Assert.Equal(LinkState.Connected, rm.State);
+    }
+
+    [Fact]
+    public void Claim_RespectsPreferredName()
+    {
+        var rm = new ReconnectMachine(0, A, "SM-S911U1", "SM-S911U1");
+        Assert.True(rm.OnStats(1, A));
+        Assert.False(rm.OnDiscoverReply(2, B, "SM-S948U1", claim: true));
+        Assert.Equal(A, rm.Target);
+    }
+
+    [Fact]
     public void SameEndpointReply_RearmsWithoutSwitch()
     {
         var rm = new ReconnectMachine(0, A, null, null);

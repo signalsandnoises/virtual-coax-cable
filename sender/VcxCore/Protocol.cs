@@ -13,6 +13,8 @@ public static class Protocol
     public const byte TypeDiscoverReply = 3;
     public const byte TypeStats = 4;
     public const ushort FlagSilenceFill = 0x0001;
+    /// <summary>DISCOVER_REPLY: the phone's user just pressed Play and it has had no audio yet; switch to it.</summary>
+    public const ushort FlagClaim = 0x0002;
     public const byte Format48kStereoS16 = 1;
     public const int SampleRate = 48000;
     public const int Channels = 2;
@@ -86,11 +88,16 @@ public static class Protocol
         return true;
     }
 
-    public static bool TryParseDiscoverReply(ReadOnlySpan<byte> pkt, out ushort audioPort, out string deviceName)
+    public static bool TryParseDiscoverReply(ReadOnlySpan<byte> pkt, out ushort audioPort, out string deviceName) =>
+        TryParseDiscoverReply(pkt, out audioPort, out deviceName, out _);
+
+    public static bool TryParseDiscoverReply(ReadOnlySpan<byte> pkt, out ushort audioPort, out string deviceName, out bool claim)
     {
         audioPort = 0;
         deviceName = "";
+        claim = false;
         if (!TryParseHeader(pkt, out var type) || type != TypeDiscoverReply || pkt.Length < HeaderSize + 2) return false;
+        claim = (BinaryPrimitives.ReadUInt16LittleEndian(pkt.Slice(6)) & FlagClaim) != 0;
         audioPort = BinaryPrimitives.ReadUInt16LittleEndian(pkt.Slice(HeaderSize));
         deviceName = Encoding.UTF8.GetString(pkt.Slice(HeaderSize + 2));
         return true;

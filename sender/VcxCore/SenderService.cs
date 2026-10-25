@@ -38,6 +38,9 @@ public sealed class SenderService : IDisposable
     private const double LogStatsEveryS = 10;
     private const double LogSenderEveryS = 30;
     private const double NetworkDebounceS = 2;
+    /// <summary>Unicast DISCOVER to Wi-Fi neighbors this often, even while connected, so a phone where Play was
+    /// just pressed can claim the stream (<see cref="Protocol.FlagClaim"/>) within a couple of seconds.</summary>
+    private const double NeighborSweepEveryS = 2;
     private static readonly TimeSpan PhoneListTtl = TimeSpan.FromSeconds(60);
 
     private readonly object _gate = new();
@@ -59,6 +62,8 @@ public sealed class SenderService : IDisposable
     private long _lastSenderLogSent;
     private double _rebindAt = double.PositiveInfinity;
     private uint _discoverCounter;
+    private double _lastNeighborSweep = double.NegativeInfinity;
+    private string _lastNeighbors = "";
     private string? _lastNotifiedError;
     private bool _disposed;
 
@@ -160,7 +165,17 @@ public sealed class SenderService : IDisposable
     private void SendDiscoverLocked()
     {
         var targets = _loopbackOnly ? new List<IPAddress> { IPAddress.Loopback } : VcxLink.BroadcastTargets();
+        if (!_loopbackOnly) targets.AddRange(NeighborTargetsLocked());
         _link.SendDiscover(targets, _discoverCounter++);
+        _lastNeighborSweep = Now();
+    }
+
+    private List<IPAddress> NeighborTargetsLocked()
+    {
+        var list = VcxLink.NeighborTargets();
+        string s = string.Join(" ", list);
+        if (s != _lastNeighbors) { _log($"neighbors for unicast discover: {(s.Length > 0 ? s : "none")}"); _lastNeighbors = s; }
+        return list;
     }
 
     /// <summary>PC woke from sleep: rebind the socket and re-open capture.</summary>
@@ -211,7 +226,7 @@ public sealed class SenderService : IDisposable
         if (toast != null) Notify("Phone connected", toast);
     }
 
-    private void OnDiscoverReply(IPEndPoint ep, string name)
+    private void OnDiscoverReply(IPEndPoint ep, string name, bool claim)
     {
         string? toast = null;
         lock (_gate)
@@ -221,10 +236,10 @@ public sealed class SenderService : IDisposable
             if (isNew) _log($"discovered {name} at {ep}");
             if (_opt.ForcedPhone != null) return;
             var old = _rm.Target;
-            if (_rm.OnDiscoverReply(Now(), ep, name))
+            if (_rm.OnDiscoverReply(Now(), ep, name, claim))
             {
                 _link.SetTarget(ep);
-                _log($"target -> {name} at {ep} (was {old?.ToString() ?? "none"})");
+                _log($"target -> {name} at {ep} (was {old?.ToString() ?? "none"}){(claim ? " [claimed: Play pressed on the phone]" : "")}");
                 if (old != null) toast = $"Switched to {name} at {ep.Address}";
             }
         }
@@ -272,6 +287,11 @@ public sealed class SenderService : IDisposable
                 if (_engine == null) return;
 
                 if (_rm.Tick(now, out bool lost)) SendDiscoverLocked();
+                else if (!_loopbackOnly && _opt.ForcedPhone == null && now - _lastNeighborSweep >= NeighborSweepEveryS)
+                {
+                    _link.SendDiscover(NeighborTargetsLocked(), _discoverCounter++);
+                    _lastNeighborSweep = now;
+                }
                 if (lost)
                 {
                     _log($"phone not answering for {ReconnectMachine.StatsTimeoutS:F0} s; rediscovering (still sending to {_rm.Target})");

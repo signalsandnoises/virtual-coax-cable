@@ -185,6 +185,19 @@ public class ProtocolTests
     }
 
     [Fact]
+    public void DiscoverReply_ClaimFlag()
+    {
+        var p = Header(Protocol.TypeDiscoverReply, 2);
+        BinaryPrimitives.WriteUInt16LittleEndian(p.AsSpan(24), 47800);
+        Assert.True(Protocol.TryParseDiscoverReply(p, out _, out _, out bool claim));
+        Assert.False(claim);
+        BinaryPrimitives.WriteUInt16LittleEndian(p.AsSpan(6), Protocol.FlagClaim);
+        Assert.True(Protocol.TryParseDiscoverReply(p, out var port, out _, out claim));
+        Assert.True(claim);
+        Assert.Equal(47800, port);
+    }
+
+    [Fact]
     public void Parse_RejectsBadMagicVersionTypeAndShortPackets()
     {
         var p = Header(Protocol.TypeDiscoverReply, 2);

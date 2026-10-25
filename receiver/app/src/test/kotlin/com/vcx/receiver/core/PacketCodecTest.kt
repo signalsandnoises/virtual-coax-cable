@@ -90,6 +90,9 @@ class PacketCodecTest {
         assertEquals(7, h.seq)
         assertEquals(47800, PacketCodec.u16(r, 24))
         assertEquals("SM-S911U1", String(r, 26, r.size - 26, Charsets.UTF_8))
+        assertEquals(0, h.flags)
+        val c = PacketCodec.buildDiscoverReply(8, 99, 47800, "SM-S911U1", Vcx.FLAG_CLAIM)
+        assertEquals(Vcx.FLAG_CLAIM, PacketCodec.parseHeader(c, 0, c.size)!!.flags)
     }
 
     @Test
