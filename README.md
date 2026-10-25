@@ -1,4 +1,4 @@
-﻿# virtual-coax-cable
+# virtual-coax-cable
 
 A wireless stand-in for a 40-foot S/PDIF coax cable.
 
