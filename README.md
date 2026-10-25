@@ -220,6 +220,20 @@ All four runs are in `tools/results/` locally (not in git). Numbers are re-analy
 - The app reported 0.03-0.06% WiFi packet loss and ~8 ms jitter (peak 13-23 ms) in the 120 ms runs.
 - Not yet done: repeat runs per setting, Experiment 2 (our own sender/receiver).
 
+## Experiment 2: our own sender and receiver (see `PLAN-own-streaming-apps.md`)
+
+### Milestone 0: setup (2026-10-24), done
+
+- .NET 8 SDK 8.0.426 per-user at `%LOCALAPPDATA%\Microsoft\dotnet` (not on PATH; the
+  `C:\Program Files\dotnet` one is runtime only).
+- Gradle 9.8.2 per-user at `%LOCALAPPDATA%\gradle-dist\gradle-9.8.2`, used to generate the
+  receiver's wrapper. Latest AGP is 9.4.1. Run with `JAVA_HOME` set to the Android Studio `jbr` (JDK 25).
+- WFAS is closed on the PC and not running on the phone.
+- Rig check with no phone stream (`20261024-232858`): in1 -33 dBFS, in2 silent, exit 2, as expected.
+
+| Run folder | Build / setting | Settled latency (phone vs loop) | Dropouts | Slips after start-up |
+|---|---|---|---|---|
+
 ## If you are resuming this work after a context reset
 
 1. Read this README, then the project notes file (path above).
