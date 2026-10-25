@@ -306,17 +306,36 @@ def analyze(rec, sched):
             noise_events.append({"kind": "silence" if np.mean(silent[a:b + 1]) > 0.5 else "glitch",
                                  "t_s": float(t_b[a]), "dur_ms": float((b - a + 1) * BLK * 1000 / SR),
                                  "min_corr": float(best[a:b + 1].min())})
-    # a click gap that overlaps a noise event is the same dropout seen twice
     events = list(noise_events)
+    # alignment-free check: the bed never stops, so input 2 must never go quiet. A stall
+    # (latency jumps up) is exactly this, and the lag logic above would otherwise hide it.
+    s2 = int(sched[first] + lat2[first])
+    e2 = int(sched[use][-1] + lat2[use][-1])
+    W = SR // 1000
+    nw = (e2 - s2) // W
+    env = np.sqrt(np.mean(sig[s2:s2 + nw * W].reshape(nw, W) ** 2, axis=1))
+    med_env = float(np.median(env))
+    c2 = sched[use] + lat2[use]
+    for a, b in group(env < 0.1 * med_env, gap=1):
+        t0 = float(np.interp(s2 + a * W, c2, t_k))
+        dur = (b - a + 1) * 1000 * W / SR
+        if not any(e["t_s"] - 0.005 < t0 + dur / 1000 and t0 < e["t_s"] + e["dur_ms"] / 1000 + 0.005 for e in events):
+            events.append({"kind": "silence", "t_s": t0, "dur_ms": float(dur),
+                           "depth_db": float(db(med_env) - db(env[a:b + 1].min()))})
+    # a click gap that overlaps a noise event is the same dropout seen twice
+    base = list(events)
     for ce in click_events:
         end = ce["t_s"] + ce["dur_ms"] / 1000
-        if not any(ne["t_s"] < end and ce["t_s"] < ne["t_s"] + ne["dur_ms"] / 1000 for ne in noise_events):
+        if not any(ne["t_s"] < end and ce["t_s"] < ne["t_s"] + ne["dur_ms"] / 1000 for ne in base):
             events.append(ce)
     events.sort(key=lambda e: e["t_s"])
     out["dropouts"] = events
     out["dropout_total_ms"] = float(sum(e["dur_ms"] for e in events))
     out["clicks_checked"] = int((got1 & after).sum())
-    out["issues"] = len(events) + len(out["lag_shifts"])
+    # a shift that coincides with a dropout is the same event; count it once
+    for sft, (lo_t, hi_t) in zip(out["lag_shifts"], spans):
+        sft["silence"] = any(e["t_s"] <= hi_t and e["t_s"] + e["dur_ms"] / 1000 >= lo_t for e in events)
+    out["issues"] = len(events) + sum(1 for s in out["lag_shifts"] if not s["silence"])
     return out
 
 
@@ -343,7 +362,12 @@ def report(res):
     print(f"  {len(ev)} event(s), ~{res['dropout_total_ms']:.0f} ms total; "
           f"{nb['bad']} of {nb['checked']} noise blocks bad, over {res['clicks_checked']} clicks")
     for e in ev[:25]:
-        what = f"{e['missed']} click(s) lost, gap upper bound" if e["kind"] == "clicks" else f"{e['kind']}, min corr {e['min_corr']:.2f}"
+        if e["kind"] == "clicks":
+            what = f"{e['missed']} click(s) lost, gap upper bound"
+        elif "min_corr" in e:
+            what = f"{e['kind']}, min corr {e['min_corr']:.2f}"
+        else:
+            what = f"silence, {e['depth_db']:.0f} dB below the bed"
         print(f"    t={e['t_s']:7.3f}s  {e['dur_ms']:6.1f} ms  {what}")
     if len(ev) > 25:
         print(f"    ... {len(ev) - 25} more")
@@ -355,15 +379,16 @@ def report(res):
     print(f"  after start-up: {skipped:.1f} ms of audio skipped (latency drops), {stalled:.1f} ms stalled (latency jumps up)")
     for s in sh[:40]:
         what = "skipped" if s["change_ms"] < 0 else "stalled"
-        print(f"    t={s['t_s']:7.3f}s  {s['change_ms']:+7.1f} ms  {what}" + ("  (start-up)" if s["startup"] else ""))
+        print(f"    t={s['t_s']:7.3f}s  {s['change_ms']:+7.1f} ms  {what}"
+              + ("  (start-up)" if s["startup"] else "") + ("  [dropout, listed above]" if s["silence"] else ""))
     if len(sh) > 40:
         print(f"    ... {len(sh) - 40} more")
     for w in res["warnings"]:
         print("  WARNING:", w)
     print()
     print("RESULT: CLEAN (no dropouts, no latency slips)" if res["issues"] == 0
-          else f"RESULT: {res['issues']} issue(s), {len(ev) + len(late)} after start-up: "
-               f"{len(ev)} dropout(s) + {len(sh)} latency shift(s)")
+          else f"RESULT: {res['issues']} issue(s), {len(ev) + sum(1 for s in late if not s['silence'])} after start-up: "
+               f"{len(ev)} dropout(s) + {sum(1 for s in sh if not s['silence'])} other latency shift(s)")
 
 
 def synth(played, n_sig):
@@ -380,6 +405,8 @@ def synth(played, n_sig):
     ch2[t0 + int(12.0 * SR):t0 + int(12.0 * SR) + int(0.030 * SR)] = 0  # 30 ms dropout at t=12 s
     cut = t0 + int(20.0 * SR)
     ch2 = np.concatenate([ch2[:cut], ch2[cut + 240:], np.zeros(240)])  # 5 ms lag step at t=20 s
+    stall = t0 + int(25.0 * SR)
+    ch2 = np.concatenate([ch2[:stall], np.zeros(1920), ch2[stall:]])[:len(p)]  # 40 ms stall at t=25 s
     ch1 += rng.standard_normal(len(ch1)) * 1e-4
     ch2 += rng.standard_normal(len(ch2)) * 1e-4
     return np.stack([ch1, ch2], axis=1).astype(np.float32)
@@ -429,12 +456,17 @@ def main():
             d = res["dropouts"]
             ok = (abs(res["startup_loss_ms"] - 255) < 25 and res["startup_clicks_lost"] > 20
                   and 79.5 <= res["latency_ms"]["median"] <= 85.5
-                  and len(res["lag_shifts"]) == 1 and abs(res["lag_shifts"][0]["t_s"] - 20.0) < 0.3
-                  and abs(res["lag_shifts"][0]["change_ms"] + 5) < 0.5
-                  and len(d) == 3
+                  and len(res["lag_shifts"]) == 2
+                  and abs(res["lag_shifts"][0]["t_s"] - 20.0) < 0.3 and abs(res["lag_shifts"][0]["change_ms"] + 5) < 0.5
+                  and not res["lag_shifts"][0]["silence"]
+                  and abs(res["lag_shifts"][1]["t_s"] - 25.0) < 0.3 and abs(res["lag_shifts"][1]["change_ms"] - 40) < 1
+                  and res["lag_shifts"][1]["silence"]
+                  and len(d) == 4
                   and abs(d[0]["t_s"] - 5.0) < 0.012 and 8 <= d[0]["dur_ms"] <= 16
                   and abs(d[1]["t_s"] - 8.0) < 0.012 and 2 <= d[1]["dur_ms"] <= 6
-                  and abs(d[2]["t_s"] - 12.0) < 0.012 and 26 <= d[2]["dur_ms"] <= 36)
+                  and abs(d[2]["t_s"] - 12.0) < 0.012 and 26 <= d[2]["dur_ms"] <= 36
+                  and abs(d[3]["t_s"] - 25.0) < 0.03 and 34 <= d[3]["dur_ms"] <= 46
+                  and res["issues"] == 5)
         print("\nSELFTEST", "PASS" if ok else "FAIL")
         sys.exit(0 if ok else 1)
 
