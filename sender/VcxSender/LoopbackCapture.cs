@@ -24,8 +24,9 @@ internal sealed unsafe class LoopbackCapture : IDisposable
     public IntPtr EventHandle => _event.SafeWaitHandle.DangerousGetHandle();
     public long DefaultPeriod100ns { get; }
 
-    /// <summary>Called with interleaved float32 stereo, the frame count, the QPC time of the first frame in µs (0 if unknown) and whether WASAPI flagged it silent.</summary>
-    public delegate void ChunkHandler(ReadOnlySpan<float> samples, int frames, double firstFrameQpcUs, bool silent);
+    /// <summary>Called with interleaved float32 stereo, the frame count, the WASAPI device position (frames) of the
+    /// first frame, and the SILENT / DATA_DISCONTINUITY buffer flags.</summary>
+    public delegate void ChunkHandler(ReadOnlySpan<float> samples, int frames, ulong devicePosition, bool silent, bool discontinuity);
 
     public LoopbackCapture()
     {
@@ -65,13 +66,13 @@ internal sealed unsafe class LoopbackCapture : IDisposable
         int count = 0;
         while (_capture.GetNextPacketSize() > 0)
         {
-            IntPtr p = _capture.GetBuffer(out int frames, out AudioClientBufferFlags flags, out long _, out long qpc100ns);
+            IntPtr p = _capture.GetBuffer(out int frames, out AudioClientBufferFlags flags, out long devicePosition, out long _);
             try
             {
                 bool silent = (flags & AudioClientBufferFlags.Silent) != 0;
-                double qpcUs = (flags & AudioClientBufferFlags.TimestampError) != 0 ? 0 : qpc100ns / 10.0;
+                bool discontinuity = (flags & AudioClientBufferFlags.DataDiscontinuity) != 0;
                 if (frames > 0)
-                    onChunk(new ReadOnlySpan<float>((void*)p, frames * Protocol.Channels), frames, qpcUs, silent);
+                    onChunk(new ReadOnlySpan<float>((void*)p, frames * Protocol.Channels), frames, (ulong)devicePosition, silent, discontinuity);
             }
             finally
             {

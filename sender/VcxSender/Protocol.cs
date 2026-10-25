@@ -20,6 +20,7 @@ public static class Protocol
     public const int AudioPort = 47800;
     public const int DiscoverPort = 47801;
     public const int StatsBodySize = 40;
+    public const int StatsExtBodySize = 56; // milestone 2: + delay_p99, delay_max, gap_max, depth_min (f32 ms)
 
     public static ReadOnlySpan<byte> Magic => "VCX1"u8;
 
@@ -111,6 +112,15 @@ public static class Protocol
             BinaryPrimitives.ReadUInt32LittleEndian(b.Slice(28)),
             BinaryPrimitives.ReadSingleLittleEndian(b.Slice(32)),
             BinaryPrimitives.ReadUInt32LittleEndian(b.Slice(36)));
+        if (b.Length >= StatsExtBodySize)
+            stats = stats with
+            {
+                Ext = new PhoneStatsExt(
+                    BinaryPrimitives.ReadSingleLittleEndian(b.Slice(40)),
+                    BinaryPrimitives.ReadSingleLittleEndian(b.Slice(44)),
+                    BinaryPrimitives.ReadSingleLittleEndian(b.Slice(48)),
+                    BinaryPrimitives.ReadSingleLittleEndian(b.Slice(52)))
+            };
         return true;
     }
 }
@@ -119,10 +129,22 @@ public readonly record struct PhoneStats(
     int BufferUs, int TargetUs, uint Received, uint Lost, uint Recovered, uint Concealed,
     uint Late, uint Underruns, float RatePpm, uint TrackFrames)
 {
-    public string Format() => string.Create(System.Globalization.CultureInfo.InvariantCulture,
-        $"phone: buf={BufferUs / 1000.0:F1}ms tgt={TargetUs / 1000.0:0.#} rx={Received} lost={Lost} rec={Recovered} " +
-        $"conc={Concealed} late={Late} und={Underruns} ppm={RatePpm:F1} track={TrackFrames}");
+    /// <summary>Extended fields (STATS body >= 56 bytes), null for the 40-byte form.</summary>
+    public PhoneStatsExt? Ext { get; init; }
+
+    public string Format()
+    {
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        string s = string.Create(inv,
+            $"phone: buf={BufferUs / 1000.0:F1}ms tgt={TargetUs / 1000.0:0.#} rx={Received} lost={Lost} rec={Recovered} " +
+            $"conc={Concealed} late={Late} und={Underruns} ppm={RatePpm:F1} track={TrackFrames}");
+        if (Ext is { } e)
+            s += string.Create(inv, $" dly99={e.DelayP99Ms:F1} dlymax={e.DelayMaxMs:F1} gap={e.GapMaxMs:F1} dmin={e.DepthMinMs:F1}");
+        return s;
+    }
 }
+
+public readonly record struct PhoneStatsExt(float DelayP99Ms, float DelayMaxMs, float GapMaxMs, float DepthMinMs);
 
 public static class Pcm
 {

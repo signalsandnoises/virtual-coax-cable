@@ -36,8 +36,9 @@ $exe = "sender\VcxSender\bin\Release\net8.0-windows\win-x64\publish\vcx-sender.e
 | `--verbose` | | socket, discovery and silence-fill transitions |
 
 Output: one `phone: buf=..ms tgt=.. rx=.. lost=.. rec=.. conc=.. late=.. und=.. ppm=.. track=..` line
-per STATS packet from the phone, and every 5 s a `sender:` line (packets sent, silence-fill packets,
-WASAPI capture packets, max gap between sends in that window, send errors).
+per STATS packet from the phone (plus `dly99 dlymax gap dmin` for 56-byte STATS), and every 5 s a
+`sender:` line for that window: packets sent, `ratio` (packets/s ÷ 400), silence packets, WASAPI
+captures, `cap_frames`, `fill_frames`, `discont_fill`, `trimmed`, max gap between sends, send errors.
 
 Exit codes: 0 ok, 1 no phone found, 2 bad arguments or capture could not start (e.g. the mix format is
 not 48 kHz stereo float).
@@ -48,11 +49,12 @@ not 48 kHz stereo float).
   high-resolution waitable timer and a 2 ms poll fallback. Each captured chunk is converted
   float32 → s16 (clipped) and every full packet is sent immediately. WASAPI delivers in ~10 ms engine
   periods, so real audio leaves in groups of 4 packets per period.
-- Silence fill: if no capture data arrives for 20 ms, the partial packet is zero-padded and sent, then
-  silence packets (flag bit 0) are emitted at exactly 48 kHz on the QPC clock, trailing real time by
-  20 ms. When capture resumes, the gap between the end of the silence and the first captured frame
-  (from the WASAPI QPC position) is filled with zeros, so the phone's buffer depth is unchanged. Seq
-  numbers come from one counter and never jump.
+- While capture is active the stream is exactly the captured frames; WASAPI delivery jitter changes
+  nothing. Zeros are inserted only when the WASAPI device position jumps between chunks (`discont_fill`).
+- Silence fill: after 100 ms with no capture data (render idle) the partial packet is zero-padded, then
+  silence packets (flag bit 0) keep the stream on the QPC real-time clock (one catch-up burst, then exactly
+  48 kHz). On resume, captured frames that silence already covered are trimmed from the start of the
+  batch (`capture resumed: trimmed=N frames`). Seq numbers never jump. Logic: `StreamCore.cs`.
 - Before K packets exist, the first packets carry fewer redundant payloads (the header K says how many).
 - If capture fails mid-stream (device removed/changed), silence fill continues and capture is reopened
   every 2 s.

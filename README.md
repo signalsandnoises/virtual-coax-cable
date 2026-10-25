@@ -278,6 +278,15 @@ service, fixed jitter buffer, AudioTrack fast track, 384-frame track buffer), pr
   Samsung "Wi-Fi power saving mode" / "Nearby device scanning".
   The hotspot also died once when the PC's Wi-Fi was disconnected from Verma. Turn hotspot power saving off.
 
+- **Samsung Wi-Fi settings turned off** (Wi-Fi power saving mode, Nearby device scanning) on the hotspot:
+  the periodic stalls are **gone**. Over 5 min, 1 second had a stall over 40 ms (147 ms), and typical gaps
+  were 4-10 ms. An earlier 2 min run had one ~30 s bad episode (150-330 ms) of unknown cause.
+- `20261025-005255-x5` (hotspot, steering fix, target 40, K=0, screen on): latency **-22.4 ms** median
+  (range -31.9 to -20.2). Phone lost/late = **0** in all runs, delay max 22-30 ms. There were still 2-5
+  short dropouts per run (1-19 ms) and 1-2 AudioTrack underruns per run. Cause: the sender inserts
+  extra audio when WASAPI delivery is ~20 ms late (it hits the 20 ms silence-fill threshold); about 402.5
+  packets/s while capturing. Sender fix in progress.
+
 **Paused 2026-10-25.** Options: (1) PC hotspot direct link, (2) check the Samsung Wi-Fi settings above,
 (3) accept roughly 150 ms+ latency, with our app or WFAS. To resume: the phone is on Verma, wireless
 debugging is likely off, and the PC's Wi-Fi is on Verma while its Ethernet stays on Verma2.

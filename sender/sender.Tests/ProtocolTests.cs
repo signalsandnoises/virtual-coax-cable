@@ -216,5 +216,43 @@ public class ProtocolTests
         Assert.True(Protocol.TryParseStats(p, out var s));
         Assert.Equal(new PhoneStats(41234, 40000, 400, 1, 2, 3, 4, 5, -12.5f, 192), s);
         Assert.Equal("phone: buf=41.2ms tgt=40 rx=400 lost=1 rec=2 conc=3 late=4 und=5 ppm=-12.5 track=192", s.Format());
+        Assert.Null(s.Ext);
+    }
+
+    [Theory]
+    [InlineData(40, false)]
+    [InlineData(48, false)] // between the two forms: base fields only
+    [InlineData(56, true)]
+    [InlineData(64, true)]  // future growth: extra trailing bytes ignored
+    public void Stats_Parse_BaseAndExtendedLengths(int bodyLen, bool hasExt)
+    {
+        var p = Header(Protocol.TypeStats, bodyLen);
+        var b = p.AsSpan(24);
+        BinaryPrimitives.WriteInt32LittleEndian(b, 30000);
+        BinaryPrimitives.WriteInt32LittleEndian(b.Slice(4), 30000);
+        BinaryPrimitives.WriteUInt32LittleEndian(b.Slice(8), 800);
+        BinaryPrimitives.WriteUInt32LittleEndian(b.Slice(36), 96);
+        if (bodyLen >= 56)
+        {
+            BinaryPrimitives.WriteSingleLittleEndian(b.Slice(40), 7.25f);
+            BinaryPrimitives.WriteSingleLittleEndian(b.Slice(44), 18.5f);
+            BinaryPrimitives.WriteSingleLittleEndian(b.Slice(48), 12.0f);
+            BinaryPrimitives.WriteSingleLittleEndian(b.Slice(52), 21.75f);
+        }
+
+        Assert.True(Protocol.TryParseStats(p, out var s));
+        Assert.Equal(800u, s.Received);
+        Assert.Equal(96u, s.TrackFrames);
+        const string baseLine = "phone: buf=30.0ms tgt=30 rx=800 lost=0 rec=0 conc=0 late=0 und=0 ppm=0.0 track=96";
+        if (hasExt)
+        {
+            Assert.Equal(new PhoneStatsExt(7.25f, 18.5f, 12.0f, 21.75f), s.Ext);
+            Assert.Equal(baseLine + " dly99=7.2 dlymax=18.5 gap=12.0 dmin=21.8", s.Format());
+        }
+        else
+        {
+            Assert.Null(s.Ext);
+            Assert.Equal(baseLine, s.Format());
+        }
     }
 }

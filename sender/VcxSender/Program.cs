@@ -167,7 +167,9 @@ public static class Program
         var st = engine.Stats;
         double startUs = QpcClock.NowUs();
         double endUs = opt.DurationS > 0 ? startUs + opt.DurationS * 1e6 : double.MaxValue;
-        long lastSent = 0, lastSil = 0, lastCb = 0;
+        var core = engine.Core!;
+        double nominalRate = (double)Protocol.SampleRate / opt.Frames;
+        long lastSent = 0, lastSil = 0, lastCb = 0, lastCap = 0, lastFill = 0, lastDisc = 0, lastTrim = 0;
         double lastPrintUs = startUs;
         while (true)
         {
@@ -179,21 +181,29 @@ public static class Program
             if (now >= nextPrint || now >= endUs)
             {
                 long sent = Interlocked.Read(ref st.PacketsSent), sil = Interlocked.Read(ref st.SilencePackets),
-                     cb = Interlocked.Read(ref st.CaptureCallbacks);
+                     cb = Interlocked.Read(ref st.CaptureCallbacks), cap = Interlocked.Read(ref core.CapturedFrames),
+                     fill = Interlocked.Read(ref core.FillFrames), disc = Interlocked.Read(ref core.DiscontFill),
+                     trim = Interlocked.Read(ref core.Trimmed);
                 double secs = (now - lastPrintUs) / 1e6;
                 if (secs > 0.5 || now < endUs)
                     Log(string.Create(CultureInfo.InvariantCulture,
-                        $"sender: sent={sent} (+{sent - lastSent}, {(sent - lastSent) / secs:F1}/s) silence={sil} (+{sil - lastSil}) " +
-                        $"captures={cb} (+{cb - lastCb}) maxgap={st.TakeMaxGapMs():F2}ms senderr={Interlocked.Read(ref st.SendErrors)}"));
-                lastSent = sent; lastSil = sil; lastCb = cb; lastPrintUs = now;
+                        $"sender: sent=+{sent - lastSent} ({sent}) ratio={(sent - lastSent) / secs / nominalRate:F4} silence=+{sil - lastSil} " +
+                        $"captures=+{cb - lastCb} cap_frames=+{cap - lastCap} fill_frames=+{fill - lastFill} " +
+                        $"discont_fill=+{disc - lastDisc} trimmed=+{trim - lastTrim} maxgap={st.TakeMaxGapMs():F2}ms " +
+                        $"senderr={Interlocked.Read(ref st.SendErrors)}"));
+                lastSent = sent; lastSil = sil; lastCb = cb; lastCap = cap; lastFill = fill; lastDisc = disc; lastTrim = trim;
+                lastPrintUs = now;
             }
             if (now >= endUs) break;
         }
 
+        double total = (QpcClock.NowUs() - startUs) / 1e6;
         engine.Stop();
         Log(string.Create(CultureInfo.InvariantCulture,
-            $"stopped after {(QpcClock.NowUs() - startUs) / 1e6:F1} s: sent={st.PacketsSent} silence={st.SilencePackets} " +
-            $"captures={st.CaptureCallbacks} senderr={st.SendErrors}"));
+            $"stopped after {total:F1} s: sent={st.PacketsSent} ratio={st.PacketsSent / total / nominalRate:F4} " +
+            $"silence={st.SilencePackets} captures={st.CaptureCallbacks} cap_frames={core.CapturedFrames} " +
+            $"fill_frames={core.FillFrames} discont_fill={core.DiscontFill} discont_events={core.DiscontEvents} " +
+            $"trimmed={core.Trimmed} resumes={core.Resumes} senderr={st.SendErrors}"));
         return 0;
     }
 
