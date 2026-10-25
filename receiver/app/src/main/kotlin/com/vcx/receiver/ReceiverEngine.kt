@@ -5,9 +5,10 @@ import android.os.Build
 import android.os.Process
 import android.os.SystemClock
 import android.util.Log
-import com.vcx.receiver.core.FrameSource
+import com.vcx.receiver.core.DelayStats
 import com.vcx.receiver.core.JitterBuffer
 import com.vcx.receiver.core.PacketCodec
+import com.vcx.receiver.core.PlayoutChain
 import com.vcx.receiver.core.StatsFormat
 import com.vcx.receiver.core.StatsSnapshot
 import com.vcx.receiver.core.Vcx
@@ -28,6 +29,9 @@ class ReceiverEngine(
     val targetMs: Int,
     val wifiMode: String,
     val trackBursts: Int,
+    val steer: Boolean,
+    val align: Boolean,
+    val silTrim: Boolean,
 ) {
     @Volatile private var running = false
     @Volatile private var lastSource: SocketAddress? = null
@@ -36,8 +40,12 @@ class ReceiverEngine(
     @Volatile private var badPackets = 0L
 
     private val jitter = JitterBuffer(targetMs, log = { Log.i(TAG, it) })
-    /** Playout chain head. Drift control (M2) will wrap [jitter] in a resampling FrameSource here. */
-    private val source: FrameSource = jitter
+    /** JitterBuffer -> resampler, with start-up alignment and depth steering. */
+    private val delayStats = DelayStats()
+    private val chain = PlayoutChain(
+        jitter, steer = steer, align = align, silTrim = silTrim, delay = delayStats, clockUs = ::nowUs,
+        log = { Log.i(TAG, it) },
+    )
 
     private lateinit var output: AudioOutput
     private lateinit var audioSocket: DatagramSocket
@@ -67,7 +75,7 @@ class ReceiverEngine(
         Log.i(
             TAG,
             "VCX-START target_ms=$targetMs wifi_mode=$wifiMode track_frames=${output.bufferFrames} " +
-                "burst_frames=${output.burstFrames} sample_rate=${Vcx.SAMPLE_RATE} track_bursts=$trackBursts " +
+                "burst_frames=${output.burstFrames} sample_rate=${Vcx.SAMPLE_RATE} track_bursts=$trackBursts steer=${if (steer) 1 else 0} align=${if (align) 1 else 0} siltrim=${if (silTrim) 1 else 0} " +
                 "track_capacity=${output.capacityFrames} min_buffer_bytes=${output.minBufferBytes} " +
                 "fast_track=${output.isFastTrack} native_rate=${output.nativeSampleRate} " +
                 "rcvbuf=${audioSocket.receiveBufferSize}",
@@ -115,7 +123,7 @@ class ReceiverEngine(
         output.play()
         underrunBase = output.underrunCount()
         while (running) {
-            val frames = source.read(buf)
+            val frames = chain.read(buf)
             val ok = if (frames > 0) {
                 output.writeFully(buf, frames * Vcx.BYTES_PER_FRAME)
             } else {
@@ -142,12 +150,14 @@ class ReceiverEngine(
                 Log.w(TAG, "rx: $e")
                 continue
             }
+            val arrivalUs = nowUs()
             val pkt = PacketCodec.parseAudio(buf, 0, dp.length)
             if (pkt == null) {
                 badPackets++
                 continue
             }
             lastSource = dp.socketAddress
+            delayStats.onArrival(pkt.seq, pkt.frames, arrivalUs)
             jitter.push(pkt)
         }
     }
@@ -194,8 +204,9 @@ class ReceiverEngine(
 
     private fun logStats() {
         val c = jitter.counters()
+        val delay = delayStats.takeSecond(nowUs())
         val snap = StatsSnapshot(
-            bufferUs = c.depthUs,
+            bufferUs = chain.depthUs(),
             targetUs = c.targetUs,
             targetMs = targetMs,
             received = c.received,
@@ -204,15 +215,21 @@ class ReceiverEngine(
             concealed = c.concealed,
             late = c.late,
             underruns = (output.underrunCount() - underrunBase).toLong().coerceAtLeast(0),
-            ratePpm = source.ratePpm,
+            ratePpm = chain.ratePpm,
             trackFrames = output.bufferFrames,
+            delayP99Ms = delay.delayP99Ms,
+            delayMaxMs = delay.delayMaxMs,
+            gapMaxMs = delay.gapMaxMs,
+            depthMinMs = chain.takeDepthMinMs(),
         )
         val line = StatsFormat.logLine(snap)
         Log.i(TAG, line)
         statusLine = line.removePrefix("VCX-STATS ")
 
-        val extra = "VCX-EXTRA dup=${c.duplicates} trims=${c.trims} trimmed_packets=${c.trimmedPackets} " +
-            "rebuffers=${c.rebuffers} resyncs=${c.resyncs} bad=$badPackets primed=${c.primed} frames=${c.framesPerPacket}"
+        val extra = "VCX-EXTRA dup=${c.duplicates} caps=${c.caps} capped_packets=${c.cappedPackets} " +
+            "align_dropped=${c.alignDropped} align_inserted=${c.alignInserted} rebuffers=${c.rebuffers} " +
+            "resyncs=${c.resyncs} bad=$badPackets max_k=${c.maxK} sil_dropped=${c.silDropped} sil_inserted=${c.silInserted} " +
+            "primed=${c.primed} frames=${c.framesPerPacket}"
         if (extra != lastExtra) {
             Log.i(TAG, extra)
             lastExtra = extra

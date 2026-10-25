@@ -11,7 +11,7 @@ object Vcx {
     const val TYPE_STATS = 4
 
     const val HEADER_SIZE = 24
-    const val STATS_BODY_SIZE = 40
+    const val STATS_BODY_SIZE = 56
 
     const val FORMAT_48K_STEREO_S16 = 1
     const val SAMPLE_RATE = 48000
@@ -147,7 +147,7 @@ object PacketCodec {
         return out
     }
 
-    /** STATS packet: 24-byte header + 40-byte body (PROTOCOL.md). */
+    /** STATS packet: 24-byte header + 56-byte body (PROTOCOL.md). */
     fun buildStats(seq: Int, timestampUs: Long, s: StatsSnapshot): ByteArray {
         val out = ByteArray(Vcx.HEADER_SIZE + Vcx.STATS_BODY_SIZE)
         writeHeader(out, 0, Vcx.TYPE_STATS, 0, seq, timestampUs, 0, 0, 0)
@@ -160,8 +160,12 @@ object PacketCodec {
         putI32(out, b + 20, s.concealed.toInt())
         putI32(out, b + 24, s.late.toInt())
         putI32(out, b + 28, s.underruns.toInt())
-        putI32(out, b + 32, java.lang.Float.floatToRawIntBits(s.ratePpm))
+        putF32(out, b + 32, s.ratePpm)
         putI32(out, b + 36, s.trackFrames)
+        putF32(out, b + 40, s.delayP99Ms)
+        putF32(out, b + 44, s.delayMaxMs)
+        putF32(out, b + 48, s.gapMaxMs)
+        putF32(out, b + 52, s.depthMinMs)
         return out
     }
 
@@ -179,6 +183,8 @@ object PacketCodec {
     fun putI32(b: ByteArray, o: Int, v: Int) {
         b[o] = v.toByte(); b[o + 1] = (v ushr 8).toByte(); b[o + 2] = (v ushr 16).toByte(); b[o + 3] = (v ushr 24).toByte()
     }
+    fun putF32(b: ByteArray, o: Int, v: Float) = putI32(b, o, java.lang.Float.floatToRawIntBits(v))
+    fun f32(b: ByteArray, o: Int): Float = java.lang.Float.intBitsToFloat(i32(b, o))
     fun putI64(b: ByteArray, o: Int, v: Long) {
         putI32(b, o, v.toInt()); putI32(b, o + 4, (v ushr 32).toInt())
     }
