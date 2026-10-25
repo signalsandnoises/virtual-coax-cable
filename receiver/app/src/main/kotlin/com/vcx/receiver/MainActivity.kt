@@ -31,6 +31,7 @@ import com.vcx.receiver.core.UiStateMapper
  * stats line and the sending PC. The service owns playback; this screen observes [PlayerHub].
  *
  * Debug builds only: `--es screen settings|tips` opens Settings directly, `--ez demo_playing true`
+ * (or `--ez demo_hiccup true`)
  * shows a fake "Playing" state (for screenshots without a sender).
  */
 class MainActivity : Activity() {
@@ -39,6 +40,7 @@ class MainActivity : Activity() {
         const val EXTRA_AUTOPLAY = "autoplay"
         const val EXTRA_SCREEN = "screen"
         const val EXTRA_DEMO_PLAYING = "demo_playing"
+        const val EXTRA_DEMO_HICCUP = "demo_hiccup"
     }
 
     private lateinit var button: PlayButtonView
@@ -48,6 +50,7 @@ class MainActivity : Activity() {
     private lateinit var hint: TextView
     private val handler = Handler(Looper.getMainLooper())
     private var demo = false
+    private var demoHiccup = false
     private val hubListener = Runnable { render() }
     private val tick = object : Runnable {
         override fun run() { render(); handler.postDelayed(this, 1000) }
@@ -59,7 +62,7 @@ class MainActivity : Activity() {
         androidLocationGuard(this).recoverIfNeeded(streaming = ReceiverService.isStreaming())
 
         val debug = Ui.isDebuggable(this)
-        demo = debug && intent.getBooleanExtra(EXTRA_DEMO_PLAYING, false)
+        readDemo(intent)
         buildUi()
 
         if (savedInstanceState == null) {
@@ -75,9 +78,15 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (Ui.isDebuggable(this)) demo = intent.getBooleanExtra(EXTRA_DEMO_PLAYING, false)
+        readDemo(intent)
         handleLaunchExtras(intent)
         render()
+    }
+
+    private fun readDemo(i: Intent) {
+        val debug = Ui.isDebuggable(this)
+        demoHiccup = debug && i.getBooleanExtra(EXTRA_DEMO_HICCUP, false)
+        demo = debug && (i.getBooleanExtra(EXTRA_DEMO_PLAYING, false) || demoHiccup)
     }
 
     private fun handleLaunchExtras(i: Intent) {
@@ -126,11 +135,11 @@ class MainActivity : Activity() {
             addView(stats, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = Ui.dp(context, 8f) })
             addView(hint, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = Ui.dp(context, 4f) })
         }
-        val buttonBox = FrameLayout(this).apply {
+        val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val buttonBox = if (!landscape) null else FrameLayout(this).apply {
             addView(button, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
             setPadding(pad, pad, pad, pad)
         }
-        val landscape = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(pad, 0, pad, pad)
@@ -139,12 +148,12 @@ class MainActivity : Activity() {
                 addView(LinearLayout(context).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER_VERTICAL
-                    addView(buttonBox, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f))
+                    addView(buttonBox!!, LinearLayout.LayoutParams(0, MATCH_PARENT, 1f))
                     addView(texts, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
                 }, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
             } else {
-                addView(buttonBox, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
-                addView(texts, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { bottomMargin = Ui.dp(context, 24f) })
+                // Button (80 % of the width) + status block, vertically centred as one group.
+                addView(CenteredGroup(context, button, texts), LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
             }
         }
         val frame = FrameLayout(this).apply { addView(root) }
@@ -171,7 +180,7 @@ class MainActivity : Activity() {
     }
 
     private fun onToggle() {
-        if (demo) { demo = false; render(); return }
+        if (demo) { demo = false; demoHiccup = false; PlayerHub.addListener(hubListener); render(); return }
         val playing = PlayerHub.latest?.running == true || ReceiverService.isStreaming()
         ReceiverService.send(this, if (playing) ReceiverService.ACTION_STOP else ReceiverService.ACTION_START)
     }
@@ -186,7 +195,8 @@ class MainActivity : Activity() {
         val h = StatsHistory()
         val base = EngineSnapshot(true, true, 24_000, 0, 0, 0, 41.0, 40, "10.0.0.223", "DESKTOP-RC3RE47")
         h.add(base)
-        val now = base.copy(received = 24_400)
+        val hiccup = if (demoHiccup) 12L else 0L
+        val now = base.copy(received = 24_400, lost = hiccup, late = hiccup, concealed = hiccup, bufferMs = if (demoHiccup) 18.0 else 41.0)
         h.add(now)
         return UiStateMapper.map(now, h, wifiConnected = true, idleTargetMs = 40)
     }
@@ -195,12 +205,13 @@ class MainActivity : Activity() {
         val settings = SettingsRepo.load(this)
         val ui = if (demo) demoState() else UiStateMapper.map(PlayerHub.latest, PlayerHub.history, wifiConnected(), settings.targetMs)
         button.playing = ui.showPause
-        button.ringColor = Ui.color(this, when (ui.status) {
-            PlayStatus.PLAYING -> R.color.vcx_ok
-            PlayStatus.HICCUP -> R.color.vcx_hiccup
-            PlayStatus.NO_WIFI -> R.color.vcx_warn
-            else -> R.color.vcx_primary_container
-        })
+        button.look = when (ui.status) {
+            PlayStatus.IDLE -> PlayButtonView.Look.IDLE
+            PlayStatus.WAITING -> PlayButtonView.Look.WAITING
+            PlayStatus.PLAYING -> PlayButtonView.Look.PLAYING
+            PlayStatus.HICCUP -> PlayButtonView.Look.HICCUP
+            PlayStatus.NO_WIFI -> PlayButtonView.Look.WARN
+        }
         status.text = ui.title
         status.setTextColor(Ui.color(this, if (ui.status == PlayStatus.HICCUP) R.color.vcx_hiccup else R.color.vcx_on_surface))
         source.text = ui.source

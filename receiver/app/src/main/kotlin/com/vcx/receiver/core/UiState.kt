@@ -80,7 +80,7 @@ object UiStateMapper {
         val lostMin = history.delta(60) { it.lost }
         val lateMin = history.delta(60) { it.late }
         val playingStats = String.format(
-            Locale.US, "Buffer %.0f ms · target %d ms · lost %d · late %d /min",
+            Locale.US, "Buffer %.0f ms · target %d ms\nlast min: %d lost, %d late",
             current.bufferMs, current.targetMs, lostMin, lateMin,
         )
         return when {

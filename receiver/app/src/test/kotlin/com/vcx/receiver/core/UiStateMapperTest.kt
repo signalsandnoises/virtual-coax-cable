@@ -43,7 +43,7 @@ class UiStateMapperTest {
         assertEquals(PlayStatus.PLAYING, ui.status)
         assertEquals("Playing", ui.title)
         assertEquals("from DESKTOP (10.0.0.223)", ui.source)
-        assertEquals("Buffer 41 ms · target 40 ms · lost 0 · late 0 /min", ui.stats)
+        assertEquals("Buffer 41 ms · target 40 ms\nlast min: 0 lost, 0 late", ui.stats)
         assertEquals("from 10.0.0.223", UiStateMapper.map(b.copy(pcName = null), history(a, b), true, 40).source)
     }
 
@@ -53,12 +53,12 @@ class UiStateMapperTest {
         val ui = UiStateMapper.map(c, history(a, b, c), true, 40)
         assertEquals(PlayStatus.HICCUP, ui.status)
         assertEquals("Wi-Fi hiccup", ui.title)
-        assertTrue(ui.stats.endsWith("lost 3 · late 3 /min"))
+        assertTrue(ui.stats.endsWith("last min: 3 lost, 3 late"))
         // Four quiet seconds later it is "Playing" again; lost/late still counted for the minute.
         val h = history(a, b, c, snap(2200, 3, 3, 3), snap(2600, 3, 3, 3), snap(3000, 3, 3, 3), snap(3400, 3, 3, 3))
         val later = UiStateMapper.map(h.at(0), h, true, 40)
         assertEquals(PlayStatus.PLAYING, later.status)
-        assertTrue(later.stats.endsWith("lost 3 · late 3 /min"))
+        assertTrue(later.stats.endsWith("last min: 3 lost, 3 late"))
     }
 
     @Test
@@ -68,7 +68,7 @@ class UiStateMapperTest {
         h.add(snap(400, lost = 5, late = 5, concealed = 5))
         for (i in 2..70) h.add(snap(i * 400L, lost = 5, late = 5, concealed = 5))
         val ui = UiStateMapper.map(h.at(0), h, true, 40)
-        assertTrue(ui.stats, ui.stats.endsWith("lost 0 · late 0 /min"))
+        assertTrue(ui.stats, ui.stats.endsWith("last min: 0 lost, 0 late"))
     }
 
     @Test

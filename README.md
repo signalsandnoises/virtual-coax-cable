@@ -337,6 +337,15 @@ service, fixed jitter buffer, AudioTrack fast track, 384-frame track buffer), pr
   `pm grant ... WRITE_SECURE_SETTINGS`): **3 dropouts** (82 + 12 ms in one stall event at 215 s, plus 3 ms),
   68 late, 1 underrun, **-17.2 ms**. Location was restored to mode 3 on STOP (verified).
 
+### Milestone 4: product builds (2026-10-25)
+
+- `vcx-tray.exe` discovered the phone on the hotspot by itself, connected and remembered it.
+- Receiver started with **no extras** (new defaults: t40, tb6, LocationGuard on): Location was turned off
+  and verified.
+- `20261025-111537-x5` (tray app + default receiver, screen on): **5/5 clean**, 0 underruns, **-10.8 ms**
+  (range -11.9 to -7.2).
+- Android UI reviewed from `adb exec-out screencap` screenshots (idle / playing / hiccup / settings / tips).
+
 **Paused 2026-10-25.** Options: (1) PC hotspot direct link, (2) check the Samsung Wi-Fi settings above,
 (3) accept roughly 150 ms+ latency, with our app or WFAS. To resume: the phone is on Verma, wireless
 debugging is likely off, and the PC's Wi-Fi is on Verma while its Ethernet stays on Verma2.

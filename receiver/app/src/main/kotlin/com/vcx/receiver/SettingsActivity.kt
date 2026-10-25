@@ -33,6 +33,8 @@ class SettingsActivity : Activity() {
 
     companion object {
         const val EXTRA_SCROLL_TO = "scroll_to"
+        private const val RECOMMENDED_TARGET = 40
+        private const val RECOMMENDED_BURSTS = 6
     }
 
     private lateinit var content: LinearLayout
@@ -166,44 +168,113 @@ class SettingsActivity : Activity() {
         getSystemService(AudioManager::class.java).getProperty(AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER)?.toIntOrNull()
             ?.takeIf { it > 0 } ?: 192
 
+    /**
+     * Labels under a SeekBar at fractions of its track. Positioned in the row's own onLayout, when the
+     * row and the labels have their real widths (the row is as wide as the SeekBar above it).
+     */
+    private fun tickLabels(seek: SeekBar, labels: List<Pair<Float, String>>, boldIndex: Int = -1): FrameLayout {
+        val fractions = labels.map { it.first }
+        val row = object : FrameLayout(this) {
+            override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+                super.onLayout(changed, l, t, r, b)
+                val w = r - l
+                val track = w - seek.paddingStart - seek.paddingEnd
+                for (i in 0 until childCount) {
+                    val tv = getChildAt(i)
+                    val x = seek.paddingStart + fractions[i] * track - tv.width / 2f
+                    tv.translationX = x.coerceIn(0f, (w - tv.width).toFloat().coerceAtLeast(0f))
+                }
+            }
+        }
+        labels.forEachIndexed { i, (_, text) ->
+            row.addView(
+                Ui.text(this, text, 13f, if (i == boldIndex) R.color.vcx_primary else R.color.vcx_on_surface_variant, bold = i == boldIndex),
+                FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT),
+            )
+        }
+        return row
+    }
+
+    private fun tintedSeekBar(max: Int, progress: Int) = SeekBar(this).apply {
+        this.max = max
+        this.progress = progress
+        progressTintList = ColorStateList.valueOf(Ui.color(context, R.color.vcx_primary))
+        thumbTintList = ColorStateList.valueOf(Ui.color(context, R.color.vcx_primary))
+        minimumHeight = Ui.dp(context, 48f)
+    }
+
+    private fun onSeek(f: (Int, Boolean) -> Unit) = object : SeekBar.OnSeekBarChangeListener {
+        override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) = f(p, fromUser)
+        override fun onStartTrackingTouch(sb: SeekBar) {}
+        override fun onStopTrackingTouch(sb: SeekBar) {}
+    }
+
+    private fun bufferMs(bursts: Int) = bursts * burstFrames() * 1000 / 48000
+
     private fun playbackSection() {
         val card = section("Playback")
-        val value = Ui.text(this, "", 17f, bold = true)
-        fun show(ms: Int) { value.text = "Buffer target: $ms ms" }
-        show(s.targetMs)
-        card.addView(value)
-        card.addView(Ui.text(this, "Lower = less delay, higher = fewer dropouts on busy Wi-Fi.", 14f, R.color.vcx_on_surface_variant))
-        val steps = (ReceiverSettings.TARGET_MAX - ReceiverSettings.TARGET_MIN) / 5
-        card.addView(SeekBar(this).apply {
-            max = steps
-            progress = (s.targetMs - ReceiverSettings.TARGET_MIN) / 5
-            progressTintList = ColorStateList.valueOf(Ui.color(context, R.color.vcx_primary))
-            thumbTintList = ColorStateList.valueOf(Ui.color(context, R.color.vcx_primary))
-            minimumHeight = Ui.dp(context, 48f)
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
-                    val ms = ReceiverSettings.TARGET_MIN + p * 5
-                    show(ms)
-                    if (fromUser) save { it.copy(targetMs = ms) }
-                }
-                override fun onStartTrackingTouch(sb: SeekBar) {}
-                override fun onStopTrackingTouch(sb: SeekBar) {}
-            })
-        }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
 
-        gap(card)
-        val burst = burstFrames()
-        label(card, "Audio buffer size", "AudioTrack buffer in hardware bursts of $burst frames. Bigger survives CPU hiccups but adds delay.")
-        radioGroup(
-            card,
-            ReceiverSettings.TRACK_BURST_OPTIONS.map { n ->
-                n.toString() to "$n × $burst frames ≈ ${n * burst * 1000 / 48000} ms" + if (n == 6) " (recommended)" else ""
-            },
-            s.trackBursts.toString(),
-        ) { v -> save { it.copy(trackBursts = v.toInt()) } }
+        // Buffer target: 20..120 ms in 5 ms steps, min/max labelled; the title says when it is the recommended 40.
+        val target = Ui.text(this, "", 17f, bold = true)
+        fun showTarget(ms: Int) { target.text = "Buffer target: $ms ms" + if (ms == RECOMMENDED_TARGET) " (recommended)" else "" }
+        showTarget(s.targetMs)
+        card.addView(target)
+        card.addView(Ui.text(this, "Lower = less delay. Higher = fewer dropouts on busy Wi-Fi.", 14f, R.color.vcx_on_surface_variant))
+        val targetBar = tintedSeekBar((ReceiverSettings.TARGET_MAX - ReceiverSettings.TARGET_MIN) / 5, (s.targetMs - ReceiverSettings.TARGET_MIN) / 5)
+        targetBar.setOnSeekBarChangeListener(onSeek { p, fromUser ->
+            val ms = ReceiverSettings.TARGET_MIN + p * 5
+            showTarget(ms)
+            if (fromUser) save { it.copy(targetMs = ms) }
+        })
+        card.addView(targetBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        card.addView(
+            tickLabels(
+                targetBar,
+                listOf(
+                    0f to "${ReceiverSettings.TARGET_MIN} ms",
+                    1f to "${ReceiverSettings.TARGET_MAX} ms",
+                ),
+            ),
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
+        )
 
-        gap(card)
-        label(card, "Wi-Fi mode", "Wi-Fi lock held while playing.")
+        // Audio buffer size: discrete stops labelled in ms.
+        gap(card, 20f)
+        val opts = ReceiverSettings.TRACK_BURST_OPTIONS
+        val audio = Ui.text(this, "", 17f, bold = true)
+        fun showAudio(bursts: Int) {
+            audio.text = "Audio buffer: ${bufferMs(bursts)} ms" + if (bursts == RECOMMENDED_BURSTS) " (recommended)" else ""
+        }
+        val current = opts.indexOf(s.trackBursts).takeIf { it >= 0 } ?: opts.indexOf(RECOMMENDED_BURSTS)
+        showAudio(opts[current])
+        card.addView(audio)
+        card.addView(Ui.text(this, "Extra safety against phone audio glitches. Bigger = more delay.", 14f, R.color.vcx_on_surface_variant))
+        val audioBar = tintedSeekBar(opts.size - 1, current).apply {
+            tickMark = android.graphics.drawable.GradientDrawable().apply {
+                shape = android.graphics.drawable.GradientDrawable.OVAL
+                setColor(Ui.color(context, R.color.vcx_outline))
+                val d = Ui.dp(context, 6f)
+                setSize(d, d)
+            }
+        }
+        audioBar.setOnSeekBarChangeListener(onSeek { p, fromUser ->
+            showAudio(opts[p])
+            if (fromUser) save { it.copy(trackBursts = opts[p]) }
+        })
+        card.addView(audioBar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        card.addView(
+            tickLabels(
+                audioBar,
+                listOf(0, opts.indexOf(RECOMMENDED_BURSTS), opts.size - 1).map { i ->
+                    i.toFloat() / (opts.size - 1) to "${bufferMs(opts[i])} ms"
+                },
+                boldIndex = 1,
+            ),
+            LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT),
+        )
+
+        gap(card, 20f)
+        label(card, "Wi-Fi mode", "How hard the phone keeps Wi-Fi awake while playing.")
         radioGroup(
             card,
             listOf("low_latency" to "Low latency (recommended)", "high_perf" to "High performance (legacy)", "none" to "None"),
@@ -316,6 +387,10 @@ class SettingsActivity : Activity() {
         switchRow(card, "Drift steering", "Tiny resampling keeps the delay constant (steer).", s.steer) { v -> save { it.copy(steer = v) } }
         switchRow(card, "Start-up alignment", "Puts the buffer on target right after start (align).", s.align) { v -> save { it.copy(align = v) } }
         switchRow(card, "Silence trim", "Fixes the buffer during silence (siltrim).", s.silTrim) { v -> save { it.copy(silTrim = v) } }
+        gap(card, 8f)
+        card.addView(Ui.text(this, "Audio buffer: ${s.trackBursts} × ${burstFrames()}-frame hardware bursts = ${s.trackBursts * burstFrames()} frames " +
+            "(track_bursts=${s.trackBursts}). Writes are one burst each (write_frames=${if (s.writeFrames == 0) "burst" else s.writeFrames.toString()}).",
+            13f, R.color.vcx_on_surface_variant))
         gap(card, 8f)
         card.addView(Ui.text(this, "adb START extras (target_ms, track_bursts, wifi_mode, location_off, pc, output_device, steer, align, siltrim, write_frames) override these for one run.", 13f, R.color.vcx_on_surface_variant))
         gap(card, 8f)

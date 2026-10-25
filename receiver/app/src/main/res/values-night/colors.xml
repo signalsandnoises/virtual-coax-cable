@@ -12,4 +12,10 @@
     <color name="vcx_warn">#F2B8B5</color>
     <color name="vcx_ok">#8BD6A0</color>
     <color name="vcx_hiccup">#FFB95C</color>
+    <color name="vcx_btn_ok">#81C995</color>
+    <color name="vcx_on_btn_ok">#00391A</color>
+    <color name="vcx_btn_hiccup">#FFB95C</color>
+    <color name="vcx_on_btn_hiccup">#2B1700</color>
+    <color name="vcx_btn_warn">#F2B8B5</color>
+    <color name="vcx_on_btn_warn">#601410</color>
 </resources>

@@ -12,6 +12,13 @@
     <color name="vcx_outline">@android:color/system_neutral2_400</color>
     <color name="vcx_warn">#B3261E</color>
     <color name="vcx_ok">#1E7A3C</color>
-    <color name="vcx_hiccup">#C77700</color>
+    <color name="vcx_hiccup">#9A5800</color>
     <color name="vcx_launcher_bg">#1B3A5C</color>
+    <!-- Big button state fills and their glyph colours (glyph contrast >= 4.5:1). -->
+    <color name="vcx_btn_ok">#2E7D32</color>
+    <color name="vcx_on_btn_ok">#FFFFFF</color>
+    <color name="vcx_btn_hiccup">#F2A500</color>
+    <color name="vcx_on_btn_hiccup">#2B1700</color>
+    <color name="vcx_btn_warn">#B3261E</color>
+    <color name="vcx_on_btn_warn">#FFFFFF</color>
 </resources>

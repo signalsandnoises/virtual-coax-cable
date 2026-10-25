@@ -74,17 +74,20 @@ object Ui {
 }
 
 /**
- * The giant circular play/pause button. Draws itself (no image assets); the ring color shows the
- * status. Only touches inside the circle count.
+ * The giant circular play/pause button. Draws itself (no image assets). Idle is an outlined neutral
+ * circle; active states are filled with the state colour (blue waiting, green playing, amber hiccup,
+ * red no Wi-Fi) so the state reads from across the room. Only touches inside the circle count.
  */
 class PlayButtonView(context: Context) : View(context) {
+    enum class Look { IDLE, WAITING, PLAYING, HICCUP, WARN }
+
     var playing = false
         set(v) { field = v; contentDescription = if (v) "Pause" else "Play"; invalidate() }
-    var ringColor: Int = Ui.color(context, R.color.vcx_primary_container)
+    var look = Look.IDLE
         set(v) { field = v; invalidate() }
 
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Ui.color(context, R.color.vcx_primary) }
-    private val icon = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Ui.color(context, R.color.vcx_on_primary) }
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val icon = Paint(Paint.ANTI_ALIAS_FLAG)
     private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val path = Path()
 
@@ -92,11 +95,11 @@ class PlayButtonView(context: Context) : View(context) {
         isClickable = true
         isFocusable = true
         contentDescription = "Play"
-        foreground = RippleDrawable(ColorStateList.valueOf(0x40FFFFFF), null, ShapeDrawable(OvalShape()))
+        foreground = RippleDrawable(ColorStateList.valueOf(0x40808080), null, ShapeDrawable(OvalShape()))
         setOnTouchListener { _, e -> e.action == MotionEvent.ACTION_DOWN && !insideCircle(e.x, e.y) }
     }
 
-    private fun radius() = min(width, height) / 2f * 0.92f
+    private fun radius() = min(width, height) / 2f * 0.98f
 
     private fun insideCircle(x: Float, y: Float): Boolean {
         val dx = x - width / 2f; val dy = y - height / 2f
@@ -111,19 +114,36 @@ class PlayButtonView(context: Context) : View(context) {
 
     override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
         super.onLayout(changed, l, t, r, b)
-        // Keep the ripple circular and centered.
         val rad = radius().toInt()
         foreground?.setBounds(width / 2 - rad, height / 2 - rad, width / 2 + rad, height / 2 + rad)
     }
 
     override fun onDraw(canvas: Canvas) {
+        val c = context
+        val (fillId, glyphId) = when (look) {
+            Look.IDLE -> R.color.vcx_surface_container to R.color.vcx_on_surface
+            Look.WAITING -> R.color.vcx_primary to R.color.vcx_on_primary
+            Look.PLAYING -> R.color.vcx_btn_ok to R.color.vcx_on_btn_ok
+            Look.HICCUP -> R.color.vcx_btn_hiccup to R.color.vcx_on_btn_hiccup
+            Look.WARN -> R.color.vcx_btn_warn to R.color.vcx_on_btn_warn
+        }
+        fill.color = Ui.color(c, fillId)
+        icon.color = Ui.color(c, glyphId)
         val cx = width / 2f; val cy = height / 2f
         val r = radius()
-        ring.color = ringColor
-        ring.strokeWidth = r * 0.07f
-        canvas.drawCircle(cx, cy, r - ring.strokeWidth / 2, ring)
-        canvas.drawCircle(cx, cy, r * 0.86f, fill)
-        val s = r * 0.34f
+        val stroke = r * 0.045f
+        canvas.drawCircle(cx, cy, r - stroke / 2, fill)
+        if (look == Look.IDLE) {
+            ring.color = Ui.color(c, R.color.vcx_outline)
+            ring.strokeWidth = stroke
+            canvas.drawCircle(cx, cy, r - stroke / 2, ring)
+        } else {
+            // Soft halo inside the edge, same hue, so filled states still have a defined rim.
+            ring.color = (Ui.color(c, glyphId) and 0x00FFFFFF) or 0x33000000
+            ring.strokeWidth = stroke
+            canvas.drawCircle(cx, cy, r - stroke * 1.5f, ring)
+        }
+        val s = r * 0.30f
         if (playing) {
             val w = s * 0.42f; val gap = s * 0.36f; val rr = w * 0.25f
             canvas.drawRoundRect(cx - gap - w, cy - s, cx - gap, cy + s, rr, rr, icon)
@@ -137,5 +157,39 @@ class PlayButtonView(context: Context) : View(context) {
             path.close()
             canvas.drawPath(path, icon)
         }
+    }
+}
+
+/**
+ * Lays out the play button and the status block as one vertically centred group: the button is a
+ * square of [widthFraction] of the width (shrunk if the group would not fit), then [gapDp], then the
+ * status block.
+ */
+class CenteredGroup(context: Context, private val button: View, private val below: View,
+                    private val widthFraction: Float = 0.8f, gapDp: Float = 24f) : android.view.ViewGroup(context) {
+    private val gap = Ui.dp(context, gapDp)
+
+    init {
+        addView(button)
+        addView(below)
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val w = MeasureSpec.getSize(widthMeasureSpec)
+        val h = MeasureSpec.getSize(heightMeasureSpec)
+        below.measure(MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(h, MeasureSpec.AT_MOST))
+        val size = min((w * widthFraction).toInt(), h - below.measuredHeight - gap).coerceAtLeast(0)
+        button.measure(MeasureSpec.makeMeasureSpec(size, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(size, MeasureSpec.EXACTLY))
+        setMeasuredDimension(w, h)
+    }
+
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        val w = r - l; val h = b - t
+        val total = button.measuredHeight + gap + below.measuredHeight
+        val top = ((h - total) / 2).coerceAtLeast(0)
+        val bx = (w - button.measuredWidth) / 2
+        button.layout(bx, top, bx + button.measuredWidth, top + button.measuredHeight)
+        val by = top + button.measuredHeight + gap
+        below.layout(0, by, w, by + below.measuredHeight)
     }
 }

@@ -52,7 +52,8 @@ a present extra overrides it for that run only. `-a com.vcx.receiver.TOGGLE` tog
 
 ## App UI (milestone 4)
 
-- **Main screen:** a giant play/pause button (ring: green playing, amber Wi-Fi hiccup, red no Wi-Fi).
+- **Main screen:** a giant play/pause button, 80 % of the width, centred with the status block: outlined
+  neutral when idle, filled blue waiting, green playing, amber Wi-Fi hiccup, red no Wi-Fi.
   Below it: status (Idle / Waiting for PC… / Playing / Wi-Fi hiccup / No Wi-Fi), the PC we receive
   from, a stats line (buffer, target, lost/late in the last minute) and a hint line (low media volume
   or "N setup tips"). The gear opens Settings. Works in portrait and landscape, light and dark, with
@@ -73,6 +74,7 @@ Debug builds only, for screenshots:
 ```powershell
 & $adb -s $s shell am start -n com.vcx.receiver/.MainActivity                         # main screen
 & $adb -s $s shell am start -n com.vcx.receiver/.MainActivity --ez demo_playing true  # fake "Playing"
+& $adb -s $s shell am start -n com.vcx.receiver/.MainActivity --ez demo_hiccup true   # fake "Wi-Fi hiccup" (amber)
 & $adb -s $s shell am start -n com.vcx.receiver/.MainActivity --es screen settings    # Settings
 & $adb -s $s shell am start -n com.vcx.receiver/.MainActivity --es screen tips        # Settings, scrolled to Wi-Fi tips
 & $adb -s $s exec-out screencap -p > shot.png
