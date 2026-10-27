@@ -33,12 +33,19 @@ import kotlin.math.roundToInt
  * target (VCX-ALIGN); then RUNNING: every [updateMs] the PI controller sets the resampler ratio
  * (steer), silent packets are dropped/held when lead is > 5 ms off target (siltrim), and a lead rise
  * of > 5 ms within 500 ms is logged as VCX-JUMP.
+ *
+ * Fast cut: steering drains only 1 ms/s, so a Wi-Fi stall that leaves lead 80 ms high during music
+ * (no silence to trim) would take over a minute to recover. When lead stays more than
+ * [FAST_CUT_EXCESS_MS] above target for [FAST_CUT_HOLD_MS] (siltrim gets that long first), the
+ * excess beyond [FAST_CUT_EXCESS_MS] is cut in one crossfade ([JitterBuffer.requestCut]); steering
+ * drains the rest.
  */
 class PlayoutChain(
     val jitter: JitterBuffer,
     val steer: Boolean = true,
     val align: Boolean = true,
     val silTrim: Boolean = true,
+    val fastCut: Boolean = true,
     private val delay: DelayStats? = null,
     private val clockUs: UsClock? = null,
     private val controller: DepthController = DepthController(),
@@ -61,6 +68,7 @@ class PlayoutChain(
     private var lastDminUs = Double.NaN
     private var gapRefFrames = 0.0
     private var editAccFrames = 0.0
+    private var overSinceFrames = -1L
     private var readsSinceSilCheck = 0
     private var framesInState = 0L
     private var framesSinceUpdate = 0L
@@ -124,6 +132,12 @@ class PlayoutChain(
             leadWin.reset(); depthWin.reset()
             editAccFrames += edits.toDouble() * jitter.framesPerPacket
             if (edits < 0) silLogDropped -= edits else silLogInserted += edits
+        }
+        val cut = jitter.pollCutEdits()
+        if (cut != 0) {
+            leadWin.reset(); depthWin.reset()
+            editAccFrames -= cut.toDouble() * jitter.framesPerPacket
+            overSinceFrames = -1
         }
 
         sample(n)
@@ -191,6 +205,7 @@ class PlayoutChain(
         val errFrames = lead - targetFrames
         val errMs = errFrames * 1000.0 / Vcx.SAMPLE_RATE
         if (steer) resampler.ratePpm = controller.update(errMs, dt).toFloat()
+        if (fastCut) fastCutCheck(errFrames)
         if ((silLogDropped > 0 || silLogInserted > 0) && totalFrames - lastSilLogFrames >= Vcx.SAMPLE_RATE) {
             val parts = ArrayList<String>()
             if (silLogDropped > 0) parts += "dropped=$silLogDropped"
@@ -200,6 +215,19 @@ class PlayoutChain(
             silLogInserted = 0
             lastSilLogFrames = totalFrames
         }
+    }
+
+    private fun fastCutCheck(errFrames: Double) {
+        val excess = errFrames - FAST_CUT_EXCESS_MS * Vcx.SAMPLE_RATE / 1000.0
+        if (excess <= 0) { overSinceFrames = -1; return }
+        if (overSinceFrames < 0) { overSinceFrames = totalFrames; return }
+        if (totalFrames - overSinceFrames < FAST_CUT_HOLD_MS * Vcx.SAMPLE_RATE / 1000 || jitter.cutPending()) return
+        val packets = (excess / jitter.framesPerPacket).toInt()
+        if (packets > 0) {
+            log("VCX-FASTCUT lead_ms=${ms(errFrames + targetFrames)} target_ms=${jitter.targetMs} packets=$packets")
+            jitter.requestCut(packets)
+        }
+        overSinceFrames = -1
     }
 
     /** Fast silence-trim decision on the last 20 ms of lead (lead is smooth; bursts do not move it). */
@@ -263,6 +291,8 @@ class PlayoutChain(
         lastDminUs = Double.NaN
         gapRefFrames = 0.0
         editAccFrames = 0.0
+        overSinceFrames = -1
+        jitter.requestCut(0)
         for (s in snaps) s.valid = false
         controller.reset()
         resampler.ratePpm = 0f
@@ -379,6 +409,8 @@ class PlayoutChain(
         const val WINDOW_SAMPLES = 400
         const val MIN_SAMPLES = 40
         const val SIL_THRESHOLD_MS = 5.0
+        const val FAST_CUT_EXCESS_MS = 40
+        const val FAST_CUT_HOLD_MS = 500
         const val JUMP_FRAMES = 5.0 * Vcx.SAMPLE_RATE / 1000
     }
 }

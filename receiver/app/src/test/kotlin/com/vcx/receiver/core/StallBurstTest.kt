@@ -198,4 +198,25 @@ class StallBurstTest {
         assertTrue(r.ppm.count { abs(it) >= 999.0 } <= 2)
         assertEquals(0L, c.lost)
     }
+
+    /**
+     * Sender catch-up during music: from packet 4000 (t = 10 s) every packet arrives 80 ms earlier, so
+     * 32 extra packets land in one burst and real latency rises 80 ms with no silence to trim.
+     * Fast cut must bring lead to <= target + 40 ms within 2 s, in one crossfaded cut.
+     */
+    @Test
+    fun fastCutRecoversLatencySpikeDuringMusic() {
+        val r = simulate(20, { k ->
+            val nominal = 1000.0 + k * 2500.0 + 3000
+            if (k < 4000) nominal else maxOf(nominal - 80_000, 1000.0 + 3999 * 2500.0 + 3000)
+        })
+        val peak = r.leadMs.indices.filter { r.t[it] in 10_000_000.0..11_000_000.0 }.maxOf { r.leadMs[it] }
+        val after = r.leadMs.indices.filter { r.t[it] in 12_000_000.0..13_000_000.0 }.maxOf { r.leadMs[it] }
+        println("fast cut: peak lead %.1f ms, lead 2-3 s after spike %.1f ms, cuts=%d packets=%d; ${r.logs.filter { it.startsWith("VCX-CUT") || it.startsWith("VCX-FASTCUT") }}".format(peak, after, r.c.cuts, r.c.cutPackets))
+        assertTrue("spike not reproduced: $peak", peak > 100)
+        assertTrue("lead still $after ms 2 s after the spike", after <= 80.0 + 3.0)
+        assertEquals(1L, r.c.cuts)
+        assertEquals(0L, r.c.silDropped)
+        assertEquals(0L, r.c.lost)
+    }
 }

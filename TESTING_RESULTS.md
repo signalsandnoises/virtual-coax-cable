@@ -29,3 +29,4 @@ Every setting or config change made while tuning the Wi-Fi audio link, with its 
 | 21 | Local network permission (Android 17) | Phone app | Fixes S26 not connecting |
 | 22 | Play claims the stream (unicast discover + claim flag) | Both | Phone switch ~1 min → <0.5 s |
 | 23 | Notifications debounced (10 s) and silent | PC sender | No toast on phone restart |
+| 24 | Fast cut: lead > target+40 ms for 0.5 s → one crossfaded cut | Phone app | 120→80 ms in ~1 s |

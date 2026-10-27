@@ -439,7 +439,7 @@ class ReceiverEngine(
 
         val extra = "VCX-EXTRA dup=${c.duplicates} caps=${c.caps} capped_packets=${c.cappedPackets} " +
             "align_dropped=${c.alignDropped} align_inserted=${c.alignInserted} rebuffers=${c.rebuffers} " +
-            "resyncs=${c.resyncs} bad=$badPackets ignored=$ignoredPackets max_k=${c.maxK} sil_dropped=${c.silDropped} sil_inserted=${c.silInserted} " +
+            "resyncs=${c.resyncs} bad=$badPackets ignored=$ignoredPackets max_k=${c.maxK} sil_dropped=${c.silDropped} sil_inserted=${c.silInserted} cuts=${c.cuts} cut_packets=${c.cutPackets} " +
             "primed=${c.primed} frames=${c.framesPerPacket}"
         if (extra != lastExtra) {
             Log.i(TAG, extra)

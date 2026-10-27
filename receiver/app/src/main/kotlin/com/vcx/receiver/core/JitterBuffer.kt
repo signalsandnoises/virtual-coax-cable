@@ -13,8 +13,9 @@ package com.vcx.receiver.core
  *   a fade-out to zero (lost + concealed), silence for further missing slots, and a fade-in on the
  *   first real packet after any gap. K (redundant payloads) is read per packet.
  * - Packet for an already played slot: late, discarded.
- * - Whole packets are only dropped/inserted by [dropOldest]/[insertSilence] (start-up alignment)
- *   and by the pathological hard cap (depth > target + [capExcessMs]: trim to target, logged).
+ * - Whole packets are only dropped/inserted by [dropOldest]/[insertSilence] (start-up alignment),
+ *   by [requestCut] (a crossfade from the next packet into the one n later; depth spikes during
+ *   music) and by the pathological hard cap (depth > target + [capExcessMs]: trim to target, logged).
  * - Concealing past all received data for [stallMs] in a row (sender gone): stop and re-prime on
  *   the next packet (logged as rebuffer).
  * - A seq jump of more than capacity/2 (sender restarted): resync, i.e. re-prime from that packet.
@@ -63,6 +64,8 @@ class JitterBuffer(
     private var silDropBudget = 0
     private var silInsertBudget = 0
     private var silNetEdits = 0
+    private var cutPending = 0
+    private var cutNetEdits = 0
 
     // Cumulative counters.
     private var received = 0L
@@ -79,13 +82,15 @@ class JitterBuffer(
     private var resyncs = 0L
     private var silDropped = 0L
     private var silInserted = 0L
+    private var cuts = 0L
+    private var cutPackets = 0L
     private var maxK = 0
 
     data class Counters(
         val received: Long, val lost: Long, val recovered: Long, val concealed: Long, val late: Long,
         val duplicates: Long, val caps: Long, val cappedPackets: Long, val alignDropped: Long,
         val alignInserted: Long, val rebuffers: Long, val resyncs: Long, val maxK: Int,
-        val silDropped: Long, val silInserted: Long,
+        val silDropped: Long, val silInserted: Long, val cuts: Long, val cutPackets: Long,
         val depthUs: Int, val targetUs: Int, val primed: Boolean, val framesPerPacket: Int,
     )
 
@@ -175,6 +180,7 @@ class JitterBuffer(
             }
             break
         }
+        if (cutPending > 0 && tryCut(i, out)) return framesPerPacket
         if (slotState[i] != EMPTY && slotSeq[i] == nextSeq) {
             System.arraycopy(slots[i], 0, out, 0, payloadBytes)
             if (slotState[i] == REDUNDANT) recovered++
@@ -237,6 +243,51 @@ class JitterBuffer(
     }
 
     /**
+     * Skip [n] packets on a later read(): that read plays the next packet crossfaded into the one [n]
+     * after it. Waits (pending) until both packets are here; replaces any pending request.
+     */
+    @Synchronized
+    fun requestCut(n: Int) {
+        cutPending = maxOf(0, n)
+    }
+
+    @Synchronized
+    fun cutPending(): Boolean = cutPending > 0
+
+    /** Packets removed by cuts since the last call (>= 0). */
+    @Synchronized
+    fun pollCutEdits(): Int {
+        val n = cutNetEdits
+        cutNetEdits = 0
+        return n
+    }
+
+    /** Pending cut at slot [i]: crossfade it into slot i + n and skip the n between. False if not possible yet. */
+    private fun tryCut(i: Int, out: ByteArray): Boolean {
+        val n = cutPending
+        if (span() <= n + 1) { cutPending = 0; return false }
+        val toSeq = nextSeq + n
+        val j = toSeq and mask
+        if (slotState[i] == EMPTY || slotSeq[i] != nextSeq || slotState[j] == EMPTY || slotSeq[j] != toSeq) return false
+        Pcm.crossfade(slots[i], slots[j], out, framesPerPacket)
+        for (q in 0..n) {
+            val k = (nextSeq + q) and mask
+            if (slotSeq[k] == nextSeq + q) slotState[k] = EMPTY
+        }
+        nextSeq = toSeq + 1
+        cutPending = 0
+        cuts++
+        cutPackets += n
+        cutNetEdits += n
+        emptyRun = 0
+        if (fades) System.arraycopy(out, 0, lastGood, 0, payloadBytes)
+        fadeInNext = false
+        lastWasGood = true
+        log("VCX-CUT dropped=$n packets (${n * framesPerPacket * 1000.0 / Vcx.SAMPLE_RATE} ms) crossfaded")
+        return true
+    }
+
+    /**
      * Allow up to [drop] silent packets to be skipped or [insert] packets of silence to be played in
      * front of silent packets. Replaces any previous budget.
      */
@@ -289,7 +340,7 @@ class JitterBuffer(
     @Synchronized
     fun counters(): Counters = Counters(
         received, lost, recovered, concealed, late, duplicates, caps, cappedPackets, alignDropped,
-        alignInserted, rebuffers, resyncs, maxK, silDropped, silInserted, depthUs(), targetMs * 1000, primed,
+        alignInserted, rebuffers, resyncs, maxK, silDropped, silInserted, cuts, cutPackets, depthUs(), targetMs * 1000, primed,
         framesPerPacket,
     )
 
@@ -321,6 +372,7 @@ class JitterBuffer(
         fadeInNext = false
         silDropBudget = 0
         silInsertBudget = 0
+        cutPending = 0
         epoch++
     }
 
@@ -358,6 +410,20 @@ object Pcm {
             if (s > lsb || s < -lsb) return false
         }
         return true
+    }
+
+    /** [out] = [from] fading out + [to] fading in, linear over the packet (gains sum to 1). */
+    fun crossfade(from: ByteArray, to: ByteArray, out: ByteArray, frames: Int) {
+        for (f in 0 until frames) {
+            val g = f.toFloat() / frames
+            for (ch in 0 until Vcx.CHANNELS) {
+                val o = (f * Vcx.CHANNELS + ch) * 2
+                val a = ((from[o].toInt() and 0xFF) or (from[o + 1].toInt() shl 8)).toShort().toInt()
+                val b = ((to[o].toInt() and 0xFF) or (to[o + 1].toInt() shl 8)).toShort().toInt()
+                val v = Math.round(a * (1 - g) + b * g)
+                out[o] = v.toByte(); out[o + 1] = (v shr 8).toByte()
+            }
+        }
     }
 
     /** Gain ramps 0 -> (frames-1)/frames across the packet. */
