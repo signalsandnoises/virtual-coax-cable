@@ -99,6 +99,9 @@ public sealed class TrayApp : ApplicationContext
     private void Balloon(string title, string text)
     {
         if (_exiting) return;
+        _log.Write($"notification: {title}: {text}");
+        if (SilentBalloon.TryShow(_icon, 4000, title, text)) return;
+        _log.Write("silent balloon unavailable; showing it with sound");
         _icon.ShowBalloonTip(4000, title, text, ToolTipIcon.Info);
     }
 

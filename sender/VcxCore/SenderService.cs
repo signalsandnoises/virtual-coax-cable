@@ -50,6 +50,7 @@ public sealed class SenderService : IDisposable
     private readonly bool _loopbackOnly;
     private readonly ReconnectMachine _rm;
     private readonly StatsWindow _window = new();
+    private readonly ToastDebouncer _toasts = new();
     private readonly Dictionary<string, DiscoveredPhone> _phones = new();
     private readonly Timer _timer;
     private AppConfig _cfg;
@@ -211,7 +212,7 @@ public sealed class SenderService : IDisposable
             if (connected)
             {
                 _log($"phone connected: {DisplayNameLocked()} at {from}");
-                toast = $"Streaming to {DisplayNameLocked()}";
+                if (_toasts.OnConnected()) toast = $"Streaming to {DisplayNameLocked()}";
                 RememberPhoneLocked();
             }
             var prev = _lastLoggedStats;
@@ -295,8 +296,9 @@ public sealed class SenderService : IDisposable
                 if (lost)
                 {
                     _log($"phone not answering for {ReconnectMachine.StatsTimeoutS:F0} s; rediscovering (still sending to {_rm.Target})");
-                    lostToast = $"{_rm.TargetName ?? _rm.Target?.Address.ToString()} stopped answering; searchingâ€¦";
+                    _toasts.OnLost(now, $"{_rm.TargetName ?? _rm.Target?.Address.ToString()} stopped answering; searchingâ€¦");
                 }
+                lostToast = _toasts.Tick(now);
 
                 string? err = _engine.CaptureError ?? _link.Error ?? _engineError;
                 if (err != _lastNotifiedError)
